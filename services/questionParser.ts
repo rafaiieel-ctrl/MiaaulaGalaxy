@@ -13,14 +13,21 @@ export interface ParsedQuestionContent {
 export function sanitizeOptionText(text: string | undefined): string {
     if (!text) return '';
     
+    let clean = text;
+
+    // Hardening: Remove explicit "Erradas=A:..." artifacts if they leaked into the option text
+    // This happens if the parser didn't split lines correctly previously
+    if (clean.includes('Erradas=') || clean.includes('Fechamento=')) {
+        return ''; // Mark as invalid/empty so it gets filtered out
+    }
+    
     // Regex to find Metadata patterns starting with P[0-7]= or specific keywords, 
     // often preceded by a semicolon or whitespace, extending to the end of the string.
-    // Example: "Texto da opção; P7=Diagnóstico..." -> "Texto da opção"
-    const METADATA_LEAK_REGEX = /(?:^|[;\s]+)(?:P[0-7]\s*[=:]|GUIA_TRAPSCAN|TRAPSCAN_EXIGIDO|WRONG_DIAGNOSIS)[\s\S]*$/i;
+    const METADATA_LEAK_REGEX = /(?:^|[;\s]+)(?:P[0-7]\s*[=:]|GUIA_TRAPSCAN|TRAPSCAN_EXIGIDO|WRONG_DIAGNOSIS|Erradas=|Fechamento=)[\s\S]*$/i;
     
-    let clean = text.replace(METADATA_LEAK_REGEX, '');
+    clean = clean.replace(METADATA_LEAK_REGEX, '');
     
-    // Remove potential trailing punctuation left behind (like a semicolon before the P7)
+    // Remove potential trailing punctuation left behind
     clean = clean.replace(/[;]+$/, '');
     
     return clean.trim();
@@ -28,111 +35,119 @@ export function sanitizeOptionText(text: string | undefined): string {
 
 /**
  * Robust parser to extract options from raw text.
- * Handles:
- * - Inline: "Enunciado... A: Opção 1 B: Opção 2"
- * - Multiline: "Enunciado...\nA) Opção 1\nB) Opção 2"
- * - Separators: ":", ")", "-", "."
- * - Mixed formats
+ * Rewritten to use Line-Based State Machine for strict boundary detection.
+ * Prevents metadata (e.g., EXPLANATION_TECH) from being parsed as options.
  */
 export function parseQuestionText(rawText: string): ParsedQuestionContent {
     if (!rawText) return { stem: '', options: {} };
 
-    const text = rawText.trim();
+    // Normalize newlines
+    const lines = rawText.replace(/\r\n/g, '\n').split('\n');
+    
+    const stemLines: string[] = [];
     const options: { [key: string]: string } = {};
-    
-    // 1. Identify potential markers positions
-    // Regex looks for A, B, C, D, E followed by a separator, preceded by whitespace or start of line
-    const markerRegex = /(?:^|\s|\n)([A-E])\s*[:\)\-\.]\s+/g;
-    
-    const matches: { key: string; index: number; fullMatch: string }[] = [];
-    let match;
-    
-    while ((match = markerRegex.exec(text)) !== null) {
-        matches.push({
-            key: match[1], // "A", "B", etc.
-            index: match.index,
-            fullMatch: match[0]
-        });
-    }
+    let currentKey: string | null = null;
+    let stopParsing = false;
 
-    // 2. Validate Sequence (We need A -> B -> C...)
-    // This filters out false positives like "O artigo A diz..."
-    const validMatches: typeof matches = [];
-    const expectedKeys = ['A', 'B', 'C', 'D', 'E'];
-    let nextExpectedIndex = 0;
+    // Regex for "A) Text" or "A. Text" or "A: Text" ANCHORED to start of line
+    const optionStartRegex = /^\s*([A-E])\s*[:\)\-\.]\s+(.*)/i;
+    
+    // Regex to STOP parsing options if we hit metadata headers or known explanation blocks
+    const stopRegex = /^\s*(CORRECT|ANSWER|GABARITO|EXPLANATION|COMENTARIO|EXPLANATION_TECH|DISTRACTOR_PROFILE|WRONG_DIAGNOSIS|GUIA_TRAPSCAN|P[0-9]=|Erradas=|Fechamento=)/i;
 
-    for (const m of matches) {
-        if (m.key === expectedKeys[nextExpectedIndex]) {
-            validMatches.push(m);
-            nextExpectedIndex++;
-        } else if (m.key === 'A' && validMatches.length > 0) {
-             // Restart sequence if we find another 'A' (maybe parsing multiple q's? stick to first valid block or reset)
-             // For a single question parser, we assume the last valid sequence or the first. 
-             // Let's stick to the first valid A..E sequence found.
-             if (nextExpectedIndex < 2) {
-                 // If we haven't even found B yet, restart
-                 validMatches.length = 0;
-                 validMatches.push(m);
-                 nextExpectedIndex = 1;
-             }
+    for (const line of lines) {
+        // 1. Check for Stop Signals
+        if (stopRegex.test(line)) {
+            stopParsing = true;
+            break; 
+        }
+        
+        if (stopParsing) break;
+
+        const match = line.match(optionStartRegex);
+        
+        if (match) {
+            // Found a new option start
+            const key = match[1].toUpperCase();
+            const content = match[2].trim();
+            
+            if (['A','B','C','D','E'].includes(key)) {
+                currentKey = key;
+                options[key] = content;
+                continue;
+            }
+        }
+
+        if (currentKey) {
+            // Continuation of previous option
+            if (line.trim()) {
+                options[currentKey] += '\n' + line.trim();
+            }
+        } else {
+            // Still in Stem
+            stemLines.push(line);
         }
     }
+    
+    // Final Sanitize & Validate
+    const cleanedOptions: any = {};
+    let hasValidOptions = false;
+    
+    Object.keys(options).forEach(k => {
+        const val = options[k];
+        // Hardening Check: Reject suspicious values
+        const lowerVal = val.toLowerCase();
+        if (lowerVal === 'correta' || lowerVal === 'incorreta' || lowerVal.includes('fechamento=') || lowerVal.includes('erradas=')) {
+            return; 
+        }
+        
+        const sanitized = sanitizeOptionText(val);
+        if (sanitized) {
+            cleanedOptions[k] = sanitized;
+            hasValidOptions = true;
+        }
+    });
 
-    // If we don't have at least A and B, treat as no options
-    if (validMatches.length < 2) {
-        return { stem: text, options: {} };
+    if (!hasValidOptions) {
+        // Fallback: If strict parsing failed, return stem only (don't try loose regex which causes the bug)
+        return { stem: rawText, options: {} };
     }
 
-    // 3. Extract Stem (Text before first 'A')
-    // We trim the end to remove the marker of A
-    // Adjust index: match.index identifies where the whitespace/newline BEFORE 'A' starts.
-    // We want up to that point.
-    let stem = text.substring(0, validMatches[0].index).trim();
-
-    // 4. Extract Options
-    for (let i = 0; i < validMatches.length; i++) {
-        const current = validMatches[i];
-        const next = validMatches[i + 1];
-        
-        // Start of content: end of the marker (A: )
-        const contentStart = current.index + current.fullMatch.length;
-        
-        // End of content: start of next marker OR end of string
-        const contentEnd = next ? next.index : text.length;
-        
-        const optionText = text.substring(contentStart, contentEnd).trim();
-        
-        // APPLY SANITIZATION LAYER 1
-        options[current.key] = sanitizeOptionText(optionText);
-    }
-
-    return { stem, options };
+    return { stem: stemLines.join('\n').trim(), options: cleanedOptions };
 }
 
 /**
- * Ensures a Question object has its options parsed.
+ * Ensures a Question object has its options parsed and valid.
  * Returns a NEW Question object with 'questionText' cleaned (stem only) 
  * and 'options' populated.
  */
 export function ensureQuestionOptions(q: Question): Question {
-    // If we already have options populated, assume valid (or at least manual override)
-    // Checking strict length 5 might be too aggressive if user deleted E, but check for at least A/B
-    const hasExistingOptions = q.options && (q.options.A || q.options.B);
+    // 1. Check existing options in object
+    let validOptions = false;
+    let cleanedExisting: any = {};
     
-    if (hasExistingOptions) {
-        // Even if existing, apply Sanitization Layer 2 (Runtime Cleanup)
-        // just in case bad data was saved previously.
-        const cleanedOptions: any = {};
-        if (q.options) {
-            Object.keys(q.options).forEach(k => {
-                // @ts-ignore
-                cleanedOptions[k] = sanitizeOptionText(q.options[k]);
-            });
-        }
-        return { ...q, options: cleanedOptions };
+    if (q.options) {
+        Object.keys(q.options).forEach(k => {
+            // @ts-ignore
+            const val = q.options[k];
+            if (val) {
+                // Hardening Check
+                const lowerVal = val.toLowerCase();
+                // Reject suspicious values
+                if (lowerVal === 'correta' || lowerVal === 'incorreta' || lowerVal.includes('fechamento=') || lowerVal.includes('erradas=')) {
+                    return;
+                }
+                cleanedExisting[k] = sanitizeOptionText(val);
+                validOptions = true;
+            }
+        });
+    }
+    
+    if (validOptions) {
+        return { ...q, options: cleanedExisting };
     }
 
-    // Fallback: Parse from text
+    // 2. Parse from text if object options are invalid/missing
     const { stem, options } = parseQuestionText(q.questionText);
     
     if (Object.keys(options).length >= 2) {
