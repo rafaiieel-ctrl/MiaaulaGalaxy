@@ -93,8 +93,18 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
 
     // Determine list of keys to render
     const keysToRender = useMemo(() => {
-        if (orderedKeys && orderedKeys.length > 0) return orderedKeys;
-        return Object.keys(question.options || {}).filter(k => !!question.options[k]).sort();
+        const allowedKeys = ['A', 'B', 'C', 'D', 'E'];
+        
+        // Defensive check to ensure we only use allowed keys present in options
+        const validAvailableKeys = Object.keys(question.options || {})
+            .filter(k => allowedKeys.includes(k) && !!question.options[k]);
+
+        if (orderedKeys && orderedKeys.length > 0) {
+            // Filter orderedKeys to ensure they are valid and present
+            return orderedKeys.filter(k => validAvailableKeys.includes(k));
+        }
+        
+        return validAvailableKeys.sort();
     }, [orderedKeys, question.options]);
 
     return (
@@ -137,7 +147,7 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
 
                 {/* Options List */}
                 <div className={`space-y-2 transition-all duration-500 ${isLocked ? 'opacity-30 filter blur-[3px] pointer-events-none' : 'opacity-100'}`} id="answers-block">
-                    {keysToRender.map((key) => {
+                    {keysToRender.map((key, index) => {
                         const value = question.options[key];
                         if (!value) return null;
                         
@@ -146,6 +156,10 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                         const isSelected = selectedOption === key;
                         const isCorrect = question.correctAnswer === key;
                         const highlights = evidence?.options[key]; 
+                        
+                        // POSITIONAL LABEL: Uses index (A, B, C...) instead of original key to avoid confusion when shuffled
+                        // Ex: Original Key "C" might be in position 0, so it renders as "A)"
+                        const visualLabel = String.fromCharCode(65 + index); // 65 = 'A'
                         
                         let btnClass = "w-full text-left p-3.5 rounded-xl border-2 transition-all flex gap-3 items-start group ";
                         
@@ -176,7 +190,7 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                                 disabled={isRevealed || (isLocked)}
                                 className={btnClass}
                             >
-                                <strong className={`shrink-0 text-base ${!isRevealed && !isSelected && !isEliminated ? 'text-sky-500 group-hover:text-sky-400' : 'text-current'}`}>{key})</strong>
+                                <strong className={`shrink-0 text-base ${!isRevealed && !isSelected && !isEliminated ? 'text-sky-500 group-hover:text-sky-400' : 'text-current'}`}>{visualLabel})</strong>
                                 <span className="leading-snug pt-0.5 text-sm md:text-base w-full">
                                     <PromptText text={displayValue} highlights={highlights} />
                                 </span>

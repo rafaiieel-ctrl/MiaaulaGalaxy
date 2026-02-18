@@ -89,13 +89,16 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
     
     // --- SHUFFLE LOGIC ---
     useEffect(() => {
-        // Only run shuffle on mount of new question
         if (!question.options) {
              setOrderedKeys([]);
              return;
         }
         
-        const validKeys = Object.keys(question.options).filter(k => !!question.options[k]);
+        // STRICT KEY FILTER: Only allow valid option keys (A-E)
+        // This prevents "correct: A" or metadata fields from appearing as buttons
+        const allowedKeys = ['A', 'B', 'C', 'D', 'E'];
+        const validKeys = Object.keys(question.options)
+            .filter(k => allowedKeys.includes(k) && !!question.options[k]);
         
         // Check if settings enabled
         if (settings.shuffleAlternatives && !question.isGapType) {
@@ -103,7 +106,8 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
             // Or if strict 2 options that are C/E.
             const isCebraspe = (question.options['C'] === 'Certo' && question.options['E'] === 'Errado');
             if (isCebraspe) {
-                setOrderedKeys(['C', 'E']);
+                // Keep explicit C/E order if those keys exist
+                setOrderedKeys(validKeys.sort()); 
             } else {
                 setOrderedKeys(shuffleArray(validKeys));
             }
@@ -183,66 +187,9 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
         }
         setIsRevealed(true);
     };
-    
-    // Override registerAttempt wrapper to include orderKeys
-    // This component uses onResult prop to communicate up, but 
-    // usually the Parent handles the registerAttempt.
-    // HOWEVER, the `onResult` signature doesn't support passing orderKeys easily unless we expand it.
-    // The safest way is to use `useQuestionDispatch().registerAttempt` internally if we are in "SIMPLE" mode 
-    // or modify `InteractiveQuestionModal` to accept it.
-    // Since `QuestionRunner` is used in `InteractiveQuestionModal` and `StudySessionModal`, 
-    // we need to pass this data up.
-    
-    // Instead of changing `onResult` signature (which would break many files), 
-    // we can attach it to `trapscanData` temporarily or handle it directly here if needed.
-    // Actually, `onResult` is the callback. The PARENT calls `registerAttempt`.
-    // We should probably pass the order info to the parent.
-    
-    // Strategy: We can't easily change the `onResult` signature in this atomic update without touching many files.
-    // But wait, the prompt says "Implement in frontend (React/TS) and/or session layer".
-    // If I can't pass it up easily, I can save it directly to a ref that the parent can read, 
-    // OR, I can dispatch an update to the question's history directly here? 
-    // No, `registerAttempt` does that.
-    
-    // Let's modify `onResult` signature in types if needed, but the prompt says:
-    // "No registro da tentativa, salvar: ... orderKeys"
-    
-    // The `onResult` callback triggers the logic that calls `registerAttempt`.
-    // If I can't change `onResult`, I can use a Ref accessible via context or just modify `onResult` arguments?
-    // Let's modify `onResult` arguments. It's defined in this file's Props.
-    // I will add an optional `extraData` argument to `onResult`.
 
     const handleRating = (rating: 'again' | 'hard' | 'good' | 'easy') => {
         const timeTaken = (Date.now() - startTimeRef.current) / 1000;
-        
-        // We need to pass orderKeys to the handler.
-        // We can attach it to trapscanData as a hack if we don't want to change signature, 
-        // OR we change the signature. Changing signature is cleaner.
-        // The prop definition is locally in this file.
-        
-        // Wait, onResult is defined in Props interface above.
-        // (rating: ..., timeTaken: number, trapscanData?: TrapscanEntry)
-        // I will augment TrapscanEntry or just assume the parent reads it from somewhere? No.
-        
-        // Let's stick to the prompt requirement: "O embaralhamento precisa ser estável por tentativa".
-        // If I update `onResult` signature, I need to update `InteractiveQuestionModal` and `StudySessionModal` too.
-        
-        // To avoid massive changes, I will temporarily attach `orderKeys` to `trapscanData` 
-        // OR use `registerAttempt` directly if I can.
-        // But `onResult` manages the flow (next question, etc).
-        
-        // Let's use a "Session Context" or similar? No.
-        // Let's update `QuestionRunnerProps` to allow `onResult` to take an extra arg?
-        // Actually, `registerAttempt` is called by the PARENT. 
-        // So the parent needs to know `orderedKeys`.
-        
-        // SOLUTION: Update `onResult` signature in `QuestionRunnerProps`.
-        // The components using it are `InteractiveQuestionModal` and `StudySessionModal`.
-        // I will update those files in this changeset.
-        
-        // For now, let's pretend `trapscanData` can hold it? No, type safety.
-        // I'll update the interface.
-        
         // @ts-ignore - Dynamic addition
         const enhancedTrapscanData = { ...trapscanData, orderKeys: orderedKeys };
         
