@@ -1,9 +1,9 @@
-
 import { LiteralnessCard, Question, Flashcard, AppSettings } from '../../types';
 import * as srs from '../srsService';
 import * as idGen from '../idGenerator';
 import { buildReadingSteps } from '../readingParser';
-import { sanitizeOptionText } from '../questionParser'; // IMPORT SANITIZER
+import { sanitizeOptionText } from '../questionParser';
+import { parseDiagnosisMap } from '../../utils/feedbackFormatters';
 
 export interface ImportResult {
     batchId: string;
@@ -31,29 +31,47 @@ export interface ImportReport {
         questions: number;
         flashcards: number;
         pairs: number;
+        gaps: number;
     };
     detectedGaps: string[];
 }
 
-// --- HELPER: Parse Map String to Object ---
-const parseMapString = (data: string): Record<string, string> => {
+/**
+ * Helper: Parses a raw block of text into a dictionary of keys/values.
+ * Handles multiline values.
+ */
+const parseBlock = (blockText: string): Record<string, string> => {
+    const lines = blockText.split('\n');
     const result: Record<string, string> = {};
-    if (!data || typeof data !== 'string') return result;
-    
-    // Support | or || separators
-    const parts = data.includes('||') ? data.split('||') : data.split('|');
-    parts.forEach(p => {
-        const match = p.trim().match(/^([A-E])\s*[:=]\s*(.*)$/);
+    let currentKey: string | null = null;
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+
+        // Match "KEY: Value" or "OPT_A: Value"
+        // We look for keys at the START of the line to avoid false positives inside text.
+        // Valid keys: Uppercase letters, numbers, underscores.
+        const match = trimmed.match(/^([A-Z0-9_]+)\s*[:=]\s*(.*)$/);
+
         if (match) {
-            result[match[1]] = match[2].trim();
+            const key = match[1].toUpperCase();
+            const value = match[2];
+            result[key] = value;
+            currentKey = key;
+        } else if (currentKey) {
+            // Append to previous key (multiline support)
+            result[currentKey] += '\n' + trimmed;
         }
-    });
+    }
     return result;
 };
 
-
 /**
- * MIIAULA ROBUST PARSER (PATCH 1.6 - FEEDBACK ENGINE & FLEXIBLE KEYS)
+ * MIIAULA ROBUST BLOCK PARSER
+ * 1. Splits text into logical blocks (Card, Question, Flashcard).
+ * 2. Parses each block independently to avoid context leaks.
+ * 3. Enforces OPT_A...E structure.
  */
 export const parseOfficialStrict = (text: string, settings: AppSettings): { 
     batchId: string, 
@@ -65,264 +83,221 @@ export const parseOfficialStrict = (text: string, settings: AppSettings): {
     const nuclei: any[] = [];
     const contents: any[] = [];
     const reports: ImportReport[] = [];
+    const errors: string[] = [];
 
-    // Regex expandido para incluir campos do Feedback Engine com suporte a variações
-    const KEY_REGEX = /\b(LIT_REF|LAW_ID|ARTICLE|TOPIC|PHASE1_FULL|PARTS_SUMMARY|RESUMO_POR_PARTES|KEYWORDS_PROVA|RISCO_FCC|GANCHO_MNEMONICO|STORYTELLING|FEYNMAN|PHASE3_ORIGINAL|PHASE3_VARIANT|EXPLAIN|PHASE2_LACUNA_\d+|PHASE2_CORRECT_\d+|PHASE2_OPT_[A-E]_\d+|Q_REF|Q_TEXT|QUESTION_TEXT|CORRECT|ANSWER|A|B|C|D|E|FC_REF|PAIR_REF|TOPIC_TITLE|FRONT|BACK|TAGS|LAW_REF|GUIA_TRAPSCAN|TRAPSCAN|PALAVRA_QUE_SALVA|KEY_DISTINCTION|FRASE_ANCORA_FINAL|FRASE_ANCORA|ANCHOR_TEXT|EXPLANATION_TECH|EXPLICA_TECNICA|EXPLANATION_STORY|HISTORIA|PERGUNTAS_FEYNMAN|DISTRACTOR_PROFILE|PERFIL_DISTRATORES|WRONG_DIAGNOSIS|DIAGNOSTICO_ERRO|WRONG_DIAGNOSIS_MAP|MAPA_ERRO|EXPLANATION|COMENTARIO):\s*/g;
+    // 1. Split into Blocks based on primary keys
+    // We split by lines that START with specific headers to define block boundaries
+    const rawBlocks = text.split(/(?=^(?:LIT_REF|Q_REF|FC_REF|PAIR_REF):)/m).filter(b => b.trim().length > 0);
 
-    const keyPositions: { key: string, start: number, end: number }[] = [];
-    let match;
-    while ((match = KEY_REGEX.exec(text)) !== null) {
-        keyPositions.push({
-            key: match[1].toUpperCase(),
-            start: match.index,
-            end: match.index + match[0].length
-        });
-    }
+    let currentCardId: string | null = null;
+    let currentLawId: string = 'GERAL';
+    let currentTopic: string = 'Geral';
 
-    const flatEntries: { key: string, value: string }[] = [];
-    keyPositions.forEach((pos, i) => {
-        const valueEnd = (i < keyPositions.length - 1) ? keyPositions[i + 1].start : text.length;
-        const val = text.substring(pos.end, valueEnd).trim();
-        const cleanVal = val.replace(/;$/, ''); 
-        
-        flatEntries.push({
-            key: pos.key,
-            value: cleanVal
-        });
-    });
-
-    let currentNucleus: any = null;
-    let currentReport: ImportReport | null = null;
-    let currentItem: any = null;
-    let currentItemType: 'QUESTION' | 'FLASHCARD' | 'PAIR' | null = null;
-    let gapDataMap: Record<string, Record<string, string>> = {};
-
-    const flushItem = () => {
-        if (currentItem && currentNucleus) {
-            const litRef = currentNucleus.id;
-            const type = currentItemType || 'UNKNOWN';
-            let idx = 1;
-            let stableId = '';
-            
-            if (type === 'QUESTION') {
-                const qRef = currentItem.q_ref || `Q${contents.length + 1}`;
-                stableId = idGen.generateQuestionKey(litRef, qRef);
-                if (!currentItem.questionText && currentItem.q_text) currentItem.questionText = currentItem.q_text;
-                currentReport!.counts.questions++;
-            } else if (type === 'FLASHCARD') {
-                const fcRef = currentItem.fc_ref || `FC${contents.length + 1}`;
-                stableId = idGen.makeDeterministicId(litRef, 'FLASHCARD', fcRef);
-                currentReport!.counts.flashcards++;
-            } else if (type === 'PAIR') {
-                const pairRef = currentItem.pair_ref || `PAIR${contents.length + 1}`;
-                stableId = idGen.makeDeterministicId(litRef, 'PAIR', pairRef);
-                currentReport!.counts.pairs++;
-                if (!currentItem.tags) currentItem.tags = [];
-                if (!currentItem.tags.includes('pair-match')) currentItem.tags.push('pair-match');
-            }
-
-            if (!currentItem.lawRef) currentItem.lawRef = litRef;
-
-            contents.push({
-                id: stableId, // UPSERT KEY
-                litRef, type, idx,
-                payload: { ...currentItem, id: stableId } // Inject ID into payload
-            });
-            currentItem = null;
-            currentItemType = null;
+    // Helper to create report if not exists
+    const getOrCreateReport = (ref: string) => {
+        let rep = reports.find(r => r.litRef === ref);
+        if (!rep) {
+            rep = {
+                litRef: ref,
+                status: 'SUCCESS',
+                errors: [],
+                warnings: [],
+                counts: { lacunas: 0, questions: 0, flashcards: 0, pairs: 0, gaps: 0 },
+                detectedGaps: []
+            };
+            reports.push(rep);
         }
+        return rep;
     };
 
-    const processGaps = () => {
-        if (!currentNucleus || !currentReport) return;
-        const GAP_REGEX = /{{\s*([^{}]+?)\s*}}/;
-        
-        Object.keys(gapDataMap).sort().forEach(xx => {
-            const data = gapDataMap[xx];
-            const rawText = data['LACUNA'] || '';
-            const correctLetter = (data['CORRECT'] || '').trim().toUpperCase();
+    for (const block of rawBlocks) {
+        const fields = parseBlock(block);
+
+        // --- TYPE: LITERALNESS CARD (ARTICLE) ---
+        if (fields.LIT_REF) {
+            const litRef = srs.canonicalizeLitRef(fields.LIT_REF);
+            const lawId = fields.LAW_ID || currentLawId;
             
-            // SANITIZE GAP OPTIONS TOO
-            const options: Record<string, string> = {
-                A: sanitizeOptionText(data['OPT_A']), 
-                B: sanitizeOptionText(data['OPT_B']), 
-                C: sanitizeOptionText(data['OPT_C']),
-                D: sanitizeOptionText(data['OPT_D']), 
-                E: sanitizeOptionText(data['OPT_E'])
-            };
+            currentCardId = idGen.generateDocKey(lawId, litRef);
+            currentLawId = lawId;
+            currentTopic = fields.TOPIC || currentTopic;
 
-            const m = rawText.match(GAP_REGEX);
-            let hasError = false;
+            nuclei.push({
+                ...fields,
+                id: currentCardId,
+                lawId: currentLawId, // Normalized in object creation later
+                article: fields.ARTICLE || litRef,
+                importBatchId: batchId
+            });
+            
+            getOrCreateReport(currentCardId);
+        }
 
-            if (!m) { 
-                const correctText = options[correctLetter];
-                if (!correctText || !rawText.includes(correctText)) {
-                     if (!options['A']) {
-                        currentReport!.errors.push(`Lacuna ${xx}: Texto sem marcação {{ }} e sem opções.`);
-                        hasError = true;
-                     }
+        // --- TYPE: QUESTION ---
+        else if (fields.Q_REF) {
+            if (!currentCardId) {
+                errors.push(`Questão ${fields.Q_REF} ignorada: Nenhum LIT_REF definido antes dela.`);
+                continue;
+            }
+
+            const qRef = fields.Q_REF;
+            const report = getOrCreateReport(currentCardId);
+            
+            // 1. Normalize Options (The Golden Rule)
+            // Priority: OPT_A > A
+            const opts: Record<string, string> = {};
+            const keys = ['A', 'B', 'C', 'D', 'E'];
+            
+            keys.forEach(k => {
+                let val = fields[`OPT_${k}`] || fields[k];
+                if (val) opts[k] = sanitizeOptionText(val);
+            });
+
+            // 2. Normalize Correct Answer
+            let correct = (fields.CORRECT || fields.ANSWER || '').trim().toUpperCase().charAt(0);
+
+            // 3. Validation
+            const isCebraspe = (fields.TYPE || '').includes('C/E') || (fields.BANK || '').toUpperCase().includes('CEBRASPE');
+            let isValid = true;
+
+            if (!fields.Q_TEXT) {
+                report.errors.push(`${qRef}: Enunciado (Q_TEXT) vazio.`);
+                isValid = false;
+            }
+
+            if (!correct) {
+                 report.errors.push(`${qRef}: Gabarito (CORRECT) não definido.`);
+                 isValid = false;
+            }
+
+            if (isCebraspe) {
+                // Auto-fill C/E options if missing
+                if (!opts.A) opts.A = 'Certo';
+                if (!opts.B) opts.B = 'Errado';
+                // Ensure C-E are empty
+                opts.C = ''; opts.D = ''; opts.E = '';
+            } else {
+                // FCC / Standard: Require A-E
+                const missingOpts = keys.filter(k => !opts[k]);
+                if (missingOpts.length > 0) {
+                    // Allow 4 options if standard for bank, but warn if < 4
+                    if (missingOpts.length > 1) { // Tolerate missing E only
+                        report.errors.push(`${qRef}: Alternativas faltando (${missingOpts.join(',')}).`);
+                        isValid = false;
+                    }
+                }
+                
+                // Validate Correct points to existing option
+                if (correct && !opts[correct]) {
+                    report.errors.push(`${qRef}: Gabarito '${correct}' aponta para opção vazia.`);
+                    isValid = false;
                 }
             }
-            
-            if (!hasError) {
-                const gapRef = `GAP-${xx}`;
+
+            if (isValid) {
+                const qId = idGen.generateQuestionKey(qRef); // Stable ID based on Q_REF
                 contents.push({
-                    id: idGen.makeDeterministicId(currentNucleus.id, 'LACUNA', gapRef),
-                    litRef: currentNucleus.id,
-                    type: 'LACUNA',
-                    idx: parseInt(xx),
+                    id: qId,
+                    litRef: currentCardId,
+                    type: 'QUESTION',
                     payload: {
-                        lacuna_text: rawText,
-                        blank_text: rawText.replace(GAP_REGEX, '__________'),
-                        correct_letter: correctLetter || 'A',
-                        correct_text: options[correctLetter] || '',
-                        options
+                        ...fields,
+                        id: qId,
+                        questionRef: qRef,
+                        questionText: fields.Q_TEXT,
+                        options: opts, // Guaranteed clean object { A:..., B:... }
+                        correctAnswer: correct,
+                        lawRef: currentCardId,
+                        // Clean legacy fields that might leak into logic
+                        A: undefined, B: undefined, C: undefined, D: undefined, E: undefined,
+                        OPT_A: undefined, OPT_B: undefined, OPT_C: undefined, OPT_D: undefined, OPT_E: undefined
                     }
                 });
-                currentReport!.counts.lacunas++;
+                report.counts.questions++;
+            } else {
+                report.status = 'FAILED';
             }
-        });
-        gapDataMap = {};
-    };
+        }
 
-    flatEntries.forEach(entry => {
-        const { key, value } = entry;
+        // --- TYPE: FLASHCARD / PAIR ---
+        else if (fields.FC_REF || fields.PAIR_REF) {
+            if (!currentCardId) continue;
+            
+            const ref = fields.FC_REF || fields.PAIR_REF;
+            const type = fields.PAIR_REF ? 'PAIR' : 'FLASHCARD';
+            const report = getOrCreateReport(currentCardId);
 
-        if (key === 'LIT_REF' || key === 'ARTICLE') {
-            flushItem(); processGaps();
-            
-            // If LIT_REF is provided, use it. If not, we will construct later when we have LAW_ID + ARTICLE
-            // But here we are iterating, so we might need to store temp state.
-            // Simplified: The logic assumes LIT_REF starts the block.
-            // If the user starts with ARTICLE and LAW_ID, we can construct the key.
-            
-            // For now, assume LIT_REF is the start or primary key. 
-            // If key is ARTICLE, check if we already have a nucleus.
-            
-            if (key === 'LIT_REF') {
-                const id = srs.canonicalizeLitRef(value);
-                currentNucleus = { id, litRefProvided: true, importBatchId: batchId };
-            } else if (key === 'ARTICLE') {
-                if (!currentNucleus) {
-                    currentNucleus = { article: value, importBatchId: batchId };
-                } else {
-                    currentNucleus.article = value;
+            contents.push({
+                id: idGen.makeDeterministicId(currentCardId, type, ref),
+                litRef: currentCardId,
+                type: type,
+                payload: {
+                    ...fields,
+                    id: ref,
+                    fc_ref: ref,
+                    pair_ref: ref,
+                    front: fields.FRONT,
+                    back: fields.BACK,
+                    lawRef: currentCardId
                 }
-            }
+            });
 
-            if (!currentNucleus.reportCreated) {
-                currentReport = {
-                    litRef: '',
-                    status: 'SUCCESS', errors: [], warnings: [],
-                    counts: { lacunas: 0, questions: 0, flashcards: 0, pairs: 0 },
-                    detectedGaps: []
-                };
-                reports.push(currentReport);
-                currentNucleus.reportCreated = true;
-                nuclei.push(currentNucleus);
-            }
-        }
-        else if (key === 'LAW_ID') {
-            if (currentNucleus) currentNucleus.law_id = value;
-        }
-        else if (key.startsWith('PHASE2_')) {
-            const m = key.match(/^PHASE2_(LACUNA|CORRECT|OPT_[A-E])_(\d+)$/);
-            if (m) {
-                const subKey = m[1];
-                const xx = m[2];
-                if (!gapDataMap[xx]) gapDataMap[xx] = {};
-                gapDataMap[xx][subKey] = value;
-            }
-        } 
-        else if (key === 'Q_REF') {
-            flushItem(); 
-            currentItemType = 'QUESTION'; 
-            currentItem = { q_ref: value, options: {}, questionText: '' };
-        } 
-        else if (key === 'FC_REF') {
-            flushItem(); 
-            currentItemType = 'FLASHCARD'; 
-            currentItem = { fc_ref: value, tags: [] };
-        } 
-        else if (key === 'PAIR_REF') {
-            flushItem(); 
-            currentItemType = 'PAIR'; 
-            currentItem = { pair_ref: value, tags: ['pair-match'] };
-        } 
-        else if (currentItem) {
-            if (['A','B','C','D','E'].includes(key) && currentItemType === 'QUESTION') {
-                // APPLY SANITIZATION LAYER 1
-                currentItem.options[key] = sanitizeOptionText(value);
-            } 
-            else if (key === 'Q_TEXT' || key === 'QUESTION_TEXT') {
-                if (currentItemType === 'QUESTION') currentItem.questionText = value;
-            }
-            else if (key === 'CORRECT' || key === 'ANSWER') {
-                currentItem.correctAnswer = value;
-            }
-            else if (key === 'FRONT') currentItem.front = value;
-            else if (key === 'BACK') currentItem.back = value;
-            else if (key === 'TOPIC_TITLE') currentItem.topic = value; // Para Pares
-            else if (key === 'TAGS') {
-                currentItem.tags = value.split(/[;,]/).map(t => t.trim()).filter(Boolean);
-            }
-            else if (key === 'LAW_REF') currentItem.lawRef = srs.canonicalizeLitRef(value);
-            
-            // Map common aliases for feedback fields
-            else if (['COMENTARIO', 'EXPLAIN'].includes(key)) currentItem.explanation = value;
-            else if (['PALAVRA_QUE_SALVA', 'KEY_DISTINCTION'].includes(key)) currentItem.key_distinction = value;
-            else if (['FRASE_ANCORA_FINAL', 'ANCHOR_TEXT', 'FRASE_ANCORA'].includes(key)) currentItem.anchor_text = value;
-            else if (['GUIA_TRAPSCAN', 'TRAPSCAN'].includes(key)) currentItem.guia_trapscan = value;
-            else if (['EXPLANATION_TECH', 'EXPLICA_TECNICA'].includes(key)) currentItem.explanation_tech = value;
-            else if (['EXPLANATION_STORY', 'HISTORIA', 'STORYTELLING'].includes(key)) currentItem.explanation_story = value;
-            else if (['WRONG_DIAGNOSIS', 'DIAGNOSTICO_ERRO'].includes(key)) currentItem.wrong_diagnosis = value;
-            else if (['DISTRACTOR_PROFILE', 'PERFIL_DISTRATORES'].includes(key)) currentItem.distractor_profile = value;
-            else if (['WRONG_DIAGNOSIS_MAP', 'MAPA_ERRO'].includes(key)) currentItem.wrong_diagnosis_map = value;
-            
-            else {
-                currentItem[key.toLowerCase()] = value;
-            }
-        } 
-        else if (currentNucleus) {
-            currentNucleus[key.toLowerCase()] = value;
-        }
-    });
-
-    flushItem(); 
-    processGaps();
-
-    // FINAL ID STABILIZATION PASS
-    nuclei.forEach((n, idx) => {
-        // If ID is missing but we have Law and Article, generate DOC_KEY
-        if (!n.id || !n.litRefProvided) {
-             if (n.law_id && n.article) {
-                 n.id = idGen.generateDocKey(n.law_id, n.article);
-             } else {
-                 // Fallback if malformed
-                 n.id = `DOC_${idx}_${Date.now()}`;
-             }
+            if (type === 'PAIR') report.counts.pairs++;
+            else report.counts.flashcards++;
         }
         
-        // Update reports with final ID
-        if (reports[idx]) reports[idx].litRef = n.id;
+        // --- TYPE: GAPS (PHASE2_LACUNA...) ---
+        // Note: The original parser handled GAPS inside the Nucleus block loop or via regex.
+        // For block parsing, GAPS might be separate or embedded in LIT_REF block. 
+        // The `parseBlock` helper captures keys like PHASE2_LACUNA_01.
+        // We need to extract them from the LIT_REF block payload in the `nuclei` processing step, 
+        // or process them here if they appear as separate blocks (unlikely in current format).
+        // Since `nuclei` items contain all fields from the block, we can process gaps post-hoc from the nuclei array.
+    }
+
+    // Process Gaps from Nuclei Fields
+    nuclei.forEach(n => {
+        const report = getOrCreateReport(n.id);
+        const gapKeys = Object.keys(n).filter(k => k.startsWith('PHASE2_LACUNA_'));
         
-        // Fix children linking
-        contents.filter(c => c.litRef === '' || c.litRef === undefined || (reports[idx] && c.litRef === reports[idx].litRef)).forEach(c => {
-             // If child doesn't have a litRef yet (from initial parse), assign parent
-             c.litRef = n.id;
-             
-             // RE-GENERATE QUESTION ID with Parent ID to ensure Q_KEY stability
-             if (c.type === 'QUESTION') {
-                 const qRef = c.payload.questionRef || c.payload.q_ref || `Q${c.idx}`;
-                 c.id = idGen.generateQuestionKey(n.id, qRef);
-                 c.payload.id = c.id;
-                 c.payload.lawRef = n.id;
-             } else if (c.type === 'LACUNA') {
-                 // Regenerate Gap ID to be safe
-                 c.id = idGen.makeDeterministicId(n.id, 'LACUNA', c.idx);
-             }
+        gapKeys.forEach(k => {
+            const suffix = k.replace('PHASE2_LACUNA_', ''); // e.g. "01"
+            const text = n[k];
+            
+            // Extract options and correct from flat fields
+            const opts = {
+                A: sanitizeOptionText(n[`PHASE2_OPT_A_${suffix}`]),
+                B: sanitizeOptionText(n[`PHASE2_OPT_B_${suffix}`]),
+                C: sanitizeOptionText(n[`PHASE2_OPT_C_${suffix}`]),
+                D: sanitizeOptionText(n[`PHASE2_OPT_D_${suffix}`]),
+                E: sanitizeOptionText(n[`PHASE2_OPT_E_${suffix}`]),
+            };
+            const correct = (n[`PHASE2_CORRECT_${suffix}`] || 'A').trim().toUpperCase();
+
+            if (text) {
+                const gapId = idGen.makeDeterministicId(n.id, 'LACUNA', suffix);
+                contents.push({
+                    id: gapId,
+                    litRef: n.id,
+                    type: 'LACUNA',
+                    idx: parseInt(suffix) || 0,
+                    payload: {
+                        lacuna_text: text,
+                        correct_letter: correct,
+                        options: opts,
+                        // Helper for blank text
+                        blank_text: text.replace(/{{\s*.*?\s*}}/, '__________')
+                    }
+                });
+                report.counts.lacunas++;
+            }
         });
     });
+
+    // Pass any global errors to the first report or a general bucket
+    if (errors.length > 0 && reports.length > 0) {
+        reports[0].errors.push(...errors);
+    }
 
     return { batchId, nuclei, contents, reports };
 };
@@ -354,21 +329,21 @@ export function parseLitRefText(text: string, settings: AppSettings, batchId: st
 
         const card: LiteralnessCard = {
             id: cardId,
-            lawId: forceLawId && lawId ? lawId : (n.law_id || lawId || 'Geral'),
-            article: n.article || n.id,
-            topic: n.topic || 'Geral',
-            phase1Full: n.phase1_full || '',
-            partsSummary: n.parts_summary || n.resumo_por_partes || '',
-            keywordsProva: n.keywords_prova || '',
-            riscoFcc: n.risco_fcc || '',
-            gancho: n.gancho_mnemonico || '',
-            storytelling: n.storytelling || '',
-            feynmanExplanation: n.feynman || '',
+            lawId: forceLawId && lawId ? lawId : (n.lawId || lawId || 'Geral'), // Use n.lawId derived in parser
+            article: n.ARTICLE || n.article || 'Artigo',
+            topic: n.TOPIC || 'Geral',
+            phase1Full: n.PHASE1_FULL || '',
+            partsSummary: n.PARTS_SUMMARY || n.RESUMO_POR_PARTES || '',
+            keywordsProva: n.KEYWORDS_PROVA || '',
+            riscoFcc: n.RISCO_FCC || '',
+            gancho: n.GANCHO_MNEMONICO || '',
+            storytelling: n.STORYTELLING || '',
+            feynmanExplanation: n.FEYNMAN || '',
             createdAt: today, nextReviewDate: today, lastReviewedAt: today, masteryScore: 0, totalAttempts: 0,
             stability: settings.srsV2.S_default_days,
             batteryProgress: 0, progressionLevel: 0, userNotes: '',
             contentType: 'LAW_DRY', importBatchId: batchId,
-            extraGaps: cardGaps // POPULATE GAPS HERE
+            extraGaps: cardGaps 
         };
         card.studyFlow = buildReadingSteps(card);
         return card;
@@ -377,40 +352,29 @@ export function parseLitRefText(text: string, settings: AppSettings, batchId: st
     const questions: Question[] = contents.filter(c => c.type === 'QUESTION').map(c => {
         const p = c.payload;
         
-        // ENSURE OPTIONS ARE SANITIZED
-        const rawOptions = p.options || { A: "Erro", B: "Erro" };
-        const cleanOptions: any = {};
-        Object.keys(rawOptions).forEach(k => {
-             cleanOptions[k] = sanitizeOptionText(rawOptions[k]);
-        });
-        
-        // Mapeamento dos campos do objeto temporário (lowercase) para o objeto Question (camelCase)
         return {
             id: c.id,
-            questionRef: p.q_ref || `Q-${c.idx}`,
-            questionText: p.questionText || p.q_text || 'Enunciado não encontrado',
-            options: cleanOptions,
-            correctAnswer: p.correctAnswer || 'A',
+            questionRef: p.questionRef,
+            questionText: p.questionText,
+            options: p.options, // Already sanitized in parser
+            correctAnswer: p.correctAnswer,
             
-            // Core Explanation
-            explanation: p.explanation || p.comentario || '',
+            explanation: p.EXPLANATION || '',
+            explanationTech: p.EXPLANATION_TECH || '',
+            explanationStory: p.EXPLANATION_STORY || '',
+            feynmanQuestions: p.PERGUNTAS_FEYNMAN || '',
             
-            // Feedback Engine Mappings
-            explanationTech: p.explanation_tech || p.explanation || '',
-            explanationStory: p.explanation_story || p.storytelling,
-            feynmanQuestions: p.perguntas_feynman || p.feynman,
+            guiaTrapscan: p.GUIA_TRAPSCAN || '',
+            keyDistinction: p.KEY_DISTINCTION || '',
+            anchorText: p.ANCHOR_TEXT || '',
             
-            guiaTrapscan: p.guia_trapscan,
-            keyDistinction: p.key_distinction || p.palavra_que_salva,
-            anchorText: p.anchor_text || p.frase_ancora_final || p.frase_ancora,
-            
-            wrongDiagnosis: p.wrong_diagnosis || p.diagnostico_erro,
-            // Critical Fix: Ensure maps are objects if they come as strings
-            distractorProfile: typeof p.distractor_profile === 'string' ? parseMapString(p.distractor_profile) : p.distractor_profile, 
-            wrongDiagnosisMap: typeof p.wrong_diagnosis_map === 'string' ? parseMapString(p.wrong_diagnosis_map) : p.wrong_diagnosis_map, 
+            wrongDiagnosis: p.WRONG_DIAGNOSIS || '',
+            // Map strings to objects if needed (Parser already did basic map for options, these might be strings)
+            distractorProfile: parseDiagnosisMap(p.DISTRACTOR_PROFILE), 
+            wrongDiagnosisMap: parseDiagnosisMap(p.WRONG_DIAGNOSIS_MAP),
 
-            subject: p.discipline || cards.find(card => card.id === c.litRef)?.lawId || 'Geral',
-            topic: p.topic || cards.find(card => card.id === c.litRef)?.article || 'Geral',
+            subject: p.DISCIPLINE || cards.find(card => card.id === c.litRef)?.lawId || 'Geral',
+            topic: p.TOPIC || cards.find(card => card.id === c.litRef)?.article || 'Geral',
             lawRef: c.litRef,
             
             importBatchId: batchId,
@@ -418,22 +382,27 @@ export function parseLitRefText(text: string, settings: AppSettings, batchId: st
             stability: settings.srsV2.S_default_days, nextReviewDate: today,
             createdAt: today, lastAttemptDate: '', errorCount: 0, timeSec: 0,
             selfEvalLevel: 0, willFallExam: false, srsStage: 0, correctStreak: 0,
-            srsVersion: 2, sequenceNumber: 0, comments: '', questionType: 'Literalidade'
+            srsVersion: 2, sequenceNumber: 0, comments: '', 
+            questionType: p.TYPE || 'Literalidade',
+            
+            hotTopic: !!p.HOT,
+            isCritical: !!p.CRIT,
+            isFundamental: !!p.FUND
         } as unknown as Question;
     });
 
     const flashcards: Flashcard[] = contents.filter(c => c.type === 'FLASHCARD' || c.type === 'PAIR').map(c => {
         const p = c.payload;
-        const tags = p.tags || [];
+        const tags = p.TAGS ? p.TAGS.split(',').map((t:string)=>t.trim()) : [];
         if (c.type === 'PAIR' && !tags.includes('pair-match')) tags.push('pair-match');
         if (!tags.includes(c.litRef)) tags.push(c.litRef);
 
         return {
             id: c.id,
-            front: p.front || 'Frente Vazia',
-            back: p.back || 'Verso Vazio',
-            discipline: p.discipline || cards.find(card => card.id === c.litRef)?.lawId || 'Geral',
-            topic: p.topic || cards.find(card => card.id === c.litRef)?.article || 'Geral',
+            front: p.FRONT || 'Frente Vazia',
+            back: p.BACK || 'Verso Vazio',
+            discipline: p.DISCIPLINE || cards.find(card => card.id === c.litRef)?.lawId || 'Geral',
+            topic: p.TOPIC_TITLE || cards.find(card => card.id === c.litRef)?.article || 'Geral',
             tags: tags,
             type: 'basic',
             importBatchId: batchId, totalAttempts: 0, masteryScore: 0,
@@ -471,7 +440,7 @@ export function enforceTargetLinkage(result: ImportResult, targetId: string): Im
 export function cleanBatchForExport(batch: any): any { return batch; }
 
 export async function runImportSelfTest(): Promise<any> {
-    const testText = `LIT_REF: TEST_01 LAW_ID: TEST ARTICLE: Art 1 PHASE1_FULL: Texto Q_REF: Q1 Q_TEXT: T? A: Sim; P7=Leaky B: Não CORRECT: A`;
+    const testText = `LIT_REF: TEST_01\nLAW_ID: TEST\nARTICLE: Art 1\nPHASE1_FULL: Texto\n\nQ_REF: Q1\nQ_TEXT: T?\nOPT_A: Sim\nOPT_B: Não\nCORRECT: A`;
     const mockSettings: any = { srsV2: { S_default_days: 1 } };
     const result = parseLitRefText(testText, mockSettings, 'TEST_BATCH');
     return { parseResult: result, auditReport: [] };

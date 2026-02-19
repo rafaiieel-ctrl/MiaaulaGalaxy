@@ -141,13 +141,18 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
         const ALL_KEYS = ['A', 'B', 'C', 'D', 'E'];
         
         return ALL_KEYS.map(key => {
+            // Force access to specific key
             const raw = safeQuestion.options[key];
             const clean = sanitizeOptionText(raw as string);
-            const isValid = clean.length > 0;
+            
+            // Even if empty, we render it but mark disabled, unless it's null/undefined
+            const isEmpty = !clean || clean.length === 0;
+            const text = isEmpty ? "(Alternativa vazia)" : clean;
+            
             return { 
                 key, 
-                text: isValid ? clean : "(Alternativa vazia ou inválida - Verifique o cadastro)", 
-                isDisabled: !isValid 
+                text, 
+                isDisabled: isEmpty 
             };
         });
     }, [safeQuestion.options]);
@@ -175,7 +180,7 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                 <div className="bg-rose-500/10 border border-rose-500/20 p-3 rounded-lg flex items-center gap-3 animate-fade-in mb-4">
                     <ExclamationTriangleIcon className="w-5 h-5 text-rose-500" />
                     <p className="text-xs text-rose-200">
-                        <strong>Atenção:</strong> O gabarito desta questão ({safeQuestion.correctAnswer}) aponta para uma alternativa inválida ou vazia. O fallback de recuperação falhou.
+                        <strong>Atenção:</strong> O gabarito desta questão ({safeQuestion.correctAnswer}) aponta para uma alternativa vazia.
                     </p>
                 </div>
             )}
@@ -266,7 +271,7 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                             const isCorrect = safeQuestion.correctAnswer === key;
                             const highlights = evidence?.options[key]; 
                             
-                            const visualLabel = String.fromCharCode(65 + index); // A, B, C... (Fixed Order)
+                            const visualLabel = key; // Keep A, B, C... as keys are already iterated
                             
                             let btnClass = "w-full text-left p-3.5 rounded-xl border-2 transition-all flex gap-3 items-start group ";
                             

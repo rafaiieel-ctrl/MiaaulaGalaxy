@@ -43,8 +43,7 @@ export const nucleusRepo = {
      */
     async saveImportBatch(batch: { cards: LiteralnessCard[], questions: Question[], flashcards: Flashcard[] }) {
         // 1. Upsert Nucleus Cards
-        // Since we are using put, it overwrites if ID exists.
-        // We assume IDs are Canonical DOC_KEYs now.
+        // Since we are using put, it overwrites if ID exists (Upsert).
         await storage.dbPut(storage.STORES.NUCLEUS, batch.cards);
         
         // 2. Handle Content Synchronization (Replace Children)
@@ -58,16 +57,18 @@ export const nucleusRepo = {
             const litRef = card.id;
 
             // A. Get existing children from DB for this Card
+            // This is crucial: we fetch what is currently stored for this LitRef
             const existingItems = await storage.dbGetByIndex<any>(contentStoreName, 'litRef', litRef);
             
             // B. Get new children from Batch for this Card
+            // We use canonical LitRef to match
             const newQuestions = batch.questions.filter(q => srs.canonicalizeLitRef(q.lawRef) === litRef);
             const newFlashcards = batch.flashcards.filter(fc => srs.isLinked(fc, litRef));
             
             const newIds = new Set<string>();
             const contentPayloads: any[] = [];
             
-            // Prepare new payloads
+            // Prepare new payloads and collect IDs
             newQuestions.forEach(q => {
                  newIds.add(q.id);
                  contentPayloads.push({
@@ -89,6 +90,7 @@ export const nucleusRepo = {
             });
             
             // C. Identify Orphans (Exist in DB but not in New Batch)
+            // If the batch updates the card, any question NOT in the batch should be considered "Deleted" or "Archived"
             const orphans = existingItems.filter(item => !newIds.has(item.id));
             
             // D. Delete Orphans
