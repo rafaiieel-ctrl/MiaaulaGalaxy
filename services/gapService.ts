@@ -10,15 +10,25 @@ export interface ParsedGap {
     parts: GapPart[]; // Array estruturado para renderização rica
 }
 
+// Helper para normalizar texto para comparação (ignora case e acentos)
+export const normalizeGapValue = (val: string): string => {
+    if (!val) return '';
+    return val.toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, ' ')
+        .trim();
+};
+
 /**
  * Faz o parsing de templates de lacunas no formato {{conteúdo}}.
- * Suporta acentos, maiúsculas/minúsculas e múltiplos tokens.
+ * Suporta acentos, maiúsculas/minúsculas e múltiplos tokens com espaços.
  */
 export const parseGapTemplate = (rawText: string): ParsedGap => {
     if (!rawText) return { displayText: '', answers: [], parts: [] };
 
-    // Regex captura qualquer coisa entre {{ e }} (non-greedy), incluindo quebras de linha se houver
-    const regex = /\{\{([\s\S]+?)\}\}/g;
+    // Regex atualizada para suportar qualquer caractere exceto '}' (lazy match)
+    // Permite {{Acentuação}}, {{ Espaços }}, {{123}}
+    const regex = /\{\{\s*([^}]+?)\s*\}\}/g;
     
     const answers: string[] = [];
     const parts: GapPart[] = [];
@@ -38,13 +48,8 @@ export const parseGapTemplate = (rawText: string): ParsedGap => {
         // 2. Conteúdo da lacuna (gabarito)
         let content = match[1].trim();
         
-        // CORREÇÃO CRÍTICA: Se o conteúdo for explicitamente "lacuna" ou "gap",
-        // isso indica um dado mal formatado. Tratamos como vazio ou placeholder genérico.
-        // O renderizador deve ignorar este conteúdo para display antes da resposta.
-        if (content.toLowerCase() === 'lacuna' || content.toLowerCase() === 'gap') {
-             // Opcional: tentar recuperar algo melhor, mas neste caso, o dado está corrompido ou é um placeholder.
-             // Mantemos o valor para que o sistema não quebre, mas o renderizador saberá lidar.
-        }
+        // Validação básica para ignorar placeholders vazios ou quebrados
+        if (!content) content = "?";
 
         answers.push(content);
         parts.push({
@@ -65,7 +70,6 @@ export const parseGapTemplate = (rawText: string): ParsedGap => {
 
     // Fallback/Warning se não encontrar tokens
     if (answers.length === 0) {
-        // Retorna o texto inteiro como uma parte de texto
         return {
             displayText: rawText,
             answers: [],
@@ -77,26 +81,4 @@ export const parseGapTemplate = (rawText: string): ParsedGap => {
     const displayText = rawText.replace(regex, '_____');
 
     return { displayText, answers, parts };
-};
-
-// --- TESTES UNITÁRIOS RÁPIDOS (DEBUG) ---
-export const runGapTests = () => {
-    console.group('GapService Tests');
-    
-    const cases = [
-        { input: "obrigações principais e/ou {{ACESSÓRIAS}}", expectedAns: "ACESSÓRIAS" },
-        { input: "obrigações principais e/ou {{acessórias}}", expectedAns: "acessórias" },
-        { input: "Texto sem token nenhum", expectedAns: undefined } // undefined indica array vazio
-    ];
-
-    cases.forEach((c, i) => {
-        const result = parseGapTemplate(c.input);
-        const passed = c.expectedAns 
-            ? result.answers.includes(c.expectedAns) && result.displayText.includes('_____')
-            : result.answers.length === 0 && result.displayText === c.input;
-        
-        console.log(`Test ${i + 1}: "${c.input}" ->`, passed ? 'PASS ✅' : 'FAIL ❌', result);
-    });
-
-    console.groupEnd();
 };

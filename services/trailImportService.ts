@@ -1,4 +1,3 @@
-
 import { Question, Flashcard, LiteralnessCard, AppSettings, ImportReport, ImportDetail, ImportStagingData, ImportEntityType, ImportCountDetail, LessonNode, Gap, StudyStep, LessonStatus } from '../types';
 import * as srs from './srsService';
 import * as idGen from './idGenerator';
@@ -116,11 +115,13 @@ const processLeiSecaImport = (
     const parsed = parseLitRefText(text, settings, batchId);
     
     const details: ImportDetail[] = [];
+    
+    // Fix: Access parsedData instead of direct properties on ParseDiagnosis
     const staging: ImportStagingData = {
-        cards: parsed.cards,
-        questions: parsed.questions,
-        flashcards: parsed.flashcards, // Inclui pairs pois a lógica interna já separa por tag
-        gaps: parsed.gaps
+        cards: parsed.parsedData.nuclei,
+        questions: parsed.parsedData.questions,
+        flashcards: parsed.parsedData.flashcards,
+        gaps: parsed.parsedData.gaps || [] // Added gaps to staging from parsedData
     };
 
     const lessons: LessonNode[] = [];
@@ -128,15 +129,15 @@ const processLeiSecaImport = (
     
     // 2. Validação Estrita & Mapping para Lessons
     // Cada CARD (Núcleo) vira uma Lesson
-    parsed.cards.forEach((card, idx) => {
+    parsed.parsedData.nuclei.forEach((card, idx) => {
         const litRef = card.id;
         
-        // Filter content related to this card
-        const lessonQuestions = parsed.questions.filter(q => srs.canonicalizeLitRef(q.lawRef) === srs.canonicalizeLitRef(litRef));
+        // Filter content related to this card using parsedData arrays
+        const lessonQuestions = parsed.parsedData.questions.filter(q => srs.canonicalizeLitRef(q.lawRef) === srs.canonicalizeLitRef(litRef));
         // Pairs and Flashcards are in the same array in parseLitRefText output, distinguished by tags
-        const lessonFlashcards = parsed.flashcards.filter(f => srs.isLinked(f, litRef) && !f.tags?.includes('pair-match'));
-        const lessonPairs = parsed.flashcards.filter(f => srs.isLinked(f, litRef) && f.tags?.includes('pair-match'));
-        const lessonGaps = parsed.gaps.filter(g => srs.canonicalizeLitRef(g.litRef) === srs.canonicalizeLitRef(litRef));
+        const lessonFlashcards = parsed.parsedData.flashcards.filter(f => srs.isLinked(f, litRef) && !f.tags?.includes('pair-match'));
+        const lessonPairs = parsed.parsedData.flashcards.filter(f => srs.isLinked(f, litRef) && f.tags?.includes('pair-match'));
+        const lessonGaps = parsed.parsedData.gaps.filter(g => srs.canonicalizeLitRef(g.litRef) === srs.canonicalizeLitRef(litRef));
 
         // STRICT VALIDATION RULES
         // A5) Lacunas >= 6
@@ -216,7 +217,7 @@ const processLeiSecaImport = (
     });
 
     const counts = {
-        lawCards: { received: parsed.stats.cards, imported: parsed.stats.cards, skipped: 0, normalized: 0 },
+        lawCards: { received: parsed.stats.articles, imported: parsed.stats.articles, skipped: 0, normalized: 0 },
         questions: { received: parsed.stats.questions, imported: parsed.stats.questions, skipped: 0, normalized: 0 },
         flashcards: { received: parsed.stats.flashcards, imported: parsed.stats.flashcards, skipped: 0, normalized: 0 },
         pairs: { received: parsed.stats.pairs, imported: parsed.stats.pairs, skipped: 0, normalized: 0 },
@@ -234,10 +235,10 @@ const processLeiSecaImport = (
             skippedEntities: 0,
             normalizedEntities: 0,
             errorsCount: errorCount,
-            warningsCount: parsed.errors.length
+            warningsCount: parsed.issues.length
         },
         counts,
-        details: [...details, ...parsed.errors.map(e => ({ entityType: 'meta' as ImportEntityType, ref: 'PARSER', action: 'NORMALIZED' as any, reasonCode: 'WARNING', message: e }))]
+        details: [...details, ...parsed.issues.map(e => ({ entityType: 'meta' as ImportEntityType, ref: 'PARSER', action: 'NORMALIZED' as any, reasonCode: 'WARNING', message: e }))]
     };
 
     // Atomic Fail Safety: If failed, return empty staging
@@ -508,7 +509,7 @@ export const generateImportReport = (
                 totalAttempts: 0, attemptHistory: [], masteryHistory: [],
                 hotTopic: false, isCritical: false, isFundamental: false,
                 lastWasCorrect: false, recentError: 0, correctStreak: 0, srsStage: 0,
-                lastAttemptDate: '', pairMatchPlayed: false, timeSec: 0, selfEvalLevel: 0, comments: ''
+                lastAttemptDate: '', pairMatchPlayed: false, timeSec: 0, selfEvalLevel: 0, comments: f.COMMENTS || ''
             };
             
             (newFc as any)._moduleIndex = modIdx; // TRACKER
