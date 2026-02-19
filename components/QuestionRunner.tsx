@@ -5,7 +5,8 @@ import { useSettings } from '../contexts/SettingsContext';
 import * as trapscanLogic from '../services/trapscanLogic';
 import { 
     XMarkIcon, LockClosedIcon, ArrowRightIcon, 
-    ExclamationTriangleIcon, FullScreenIcon, ExitFullScreenIcon
+    ExclamationTriangleIcon, FullScreenIcon, ExitFullScreenIcon,
+    WrenchScrewdriverIcon
 } from './icons';
 import QuestionViewer from './QuestionViewer';
 import TrapscanGate from './TrapscanGate';
@@ -16,6 +17,7 @@ import { isStrictQuestion } from '../services/contentGate';
 import ConfirmationModal from './ConfirmationModal';
 import { useQuestionDispatch } from '../contexts/QuestionContext';
 import { getSafeQuestionView } from '../services/questionParser';
+import { logInvalidItem } from '../services/reportService'; // NEW IMPORT
 
 interface QuestionRunnerProps {
     question: Question;
@@ -68,57 +70,71 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
 
     // --- INTEGRITY CHECK ---
     // Check if the SAFE VIEW is playable. 
-    // It's unplayable if the correct answer points to an empty option.
     const safeView = useMemo(() => getSafeQuestionView(question), [question]);
     
     // Check if it's C/E type first (usually safe as it doesn't need text options)
     const isJudgement = safeView.questionType?.includes('C/E') || (safeView.bank?.includes('CESPE'));
     
     // Check if standard options are broken
-    const isBroken = useMemo(() => {
-        if (allowGaps || isJudgement) return false;
+    const integrityCheck = useMemo(() => {
+        if (allowGaps || isJudgement) return { broken: false, missing: [] };
         
         const correctKey = safeView.correctAnswer;
         // @ts-ignore
-        const optionText = safeView.options[correctKey];
+        const correctOptionText = safeView.options[correctKey];
+        const missingKeys: string[] = [];
         
-        // If option text for correct answer is missing, it's broken.
-        return !optionText || optionText.trim().length === 0;
+        ['A', 'B', 'C', 'D', 'E'].forEach(k => {
+             // @ts-ignore
+             if (!safeView.options[k] || !safeView.options[k].trim()) missingKeys.push(k);
+        });
+
+        // It is CRITICALLY BROKEN if the correct answer option is empty
+        const isCriticalBroken = !correctOptionText || correctOptionText.trim().length === 0;
+
+        return { broken: isCriticalBroken, missing: missingKeys };
     }, [safeView, allowGaps, isJudgement]);
 
+    const isBroken = integrityCheck.broken;
+
+    // --- AUTO SKIP BROKEN ITEMS ---
     useEffect(() => {
         if (isInvalidContent || isBroken) {
-            const reason = isBroken ? "Gabarito aponta para alternativa vazia" : "Conteúdo inválido/incompleto";
-            console.warn(`[QuestionRunner] Skipped broken question (${question.id}). Reason: ${reason}`);
+            // Log for batch correction
+            logInvalidItem(question, integrityCheck.missing);
+
+            // UI Feedback
+            const reason = isBroken ? "Cadastro incompleto: gabarito sem texto" : "Conteúdo inválido";
+            setToastMessage(`Questão enviada para correção do lote.`);
             
-            // Show toast and auto-skip
-            setToastMessage(`Questão pulada: ${reason}`);
-            
+            // Auto-skip logic
             if (onNext) {
                 const t = setTimeout(() => {
                     setToastMessage(null);
                     onNext();
-                }, 2000); // 2s delay to read toast
+                }, 1500); // 1.5s delay to read message
                 return () => clearTimeout(t);
             }
         }
-    }, [question.id, isInvalidContent, isBroken, onNext]);
+    }, [question.id, isInvalidContent, isBroken, onNext, integrityCheck.missing]);
     
     const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
 
-    if (isInvalidContent || isBroken) {
-        return (
-            <div className="flex flex-col items-center justify-center h-full p-10 text-center space-y-4 bg-slate-900 z-50 fixed inset-0">
-                <ExclamationTriangleIcon className="w-16 h-16 text-amber-500 animate-pulse" />
-                <h3 className="text-xl font-bold text-white">Conteúdo Corrompido</h3>
-                <p className="text-slate-400 text-sm max-w-xs">{toastMessage || "Detectando integridade..."}</p>
-                <div className="w-8 h-8 border-4 border-white/20 border-t-white rounded-full animate-spin"></div>
-                <button onClick={onNext} className="mt-4 text-xs text-slate-500 hover:text-white underline">
-                    Forçar Avanço Imediato
-                </button>
-            </div>
-        );
-    }
+    // --- BROKEN STATE RENDER ---
+    // If broken, we still render the viewer (locked) so user sees WHAT is wrong, but overlay the warning
+    const renderBrokenOverlay = () => (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-slate-900/90 backdrop-blur-sm p-6 text-center animate-fade-in">
+             <WrenchScrewdriverIcon className="w-16 h-16 text-amber-500 mb-4 animate-bounce-subtle" />
+             <h3 className="text-xl font-bold text-white mb-2">Item em Manutenção</h3>
+             <p className="text-slate-400 text-sm max-w-xs mb-6">
+                 Esta questão possui cadastro incompleto (alternativas vazias). Ela foi registrada automaticamente para correção no lote.
+             </p>
+             <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden max-w-xs">
+                 <div className="h-full bg-amber-500 animate-progress-indeterminate"></div>
+             </div>
+             <p className="text-[10px] text-slate-500 mt-2 uppercase tracking-widest font-bold">Pulando...</p>
+        </div>
+    );
     
     const activeConfig: TrapscanSessionConfig = useMemo(() => {
         if (sessionConfig) return sessionConfig;
@@ -152,17 +168,18 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
     }, [question.id]);
 
     const isGap = allowGaps && (question.isGapType || question.questionText.includes('{{'));
-    const isLocked = !isGap && trapscanLogic.checkAlternativesLocked(activeConfig, trapscanData);
+    const isLocked = (!isGap && trapscanLogic.checkAlternativesLocked(activeConfig, trapscanData)) || isBroken; // Force lock if broken
     const blockReason = !isGap ? trapscanLogic.getSubmitBlockReason(activeConfig, trapscanData, !!selectedOption) : null;
-    const canSubmit = !blockReason;
+    const canSubmit = !blockReason && !isBroken;
 
     const handleOptionSelect = (key: string) => {
-        if (!isRevealed && !isLocked && !isEliminationMode) {
+        if (!isRevealed && !isLocked && !isEliminationMode && !isBroken) {
             setSelectedOption(key);
         }
     };
     
     const handleEliminate = (key: string) => {
+        if (isBroken) return;
         setEliminatedOptions(prev => {
              if (prev.includes(key)) return prev.filter(k => k !== key);
              return [...prev, key];
@@ -209,10 +226,14 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
         setIsDeleteConfirmOpen(false);
     };
 
-    const showTrapscan = !isGap && trapscanLogic.isTrapscanActive(activeConfig) && !question.isGapType;
+    const showTrapscan = !isGap && trapscanLogic.isTrapscanActive(activeConfig) && !question.isGapType && !isBroken;
 
     return (
         <div className="flex flex-col h-full bg-[var(--q-surface)] text-[var(--q-text)] relative">
+            
+            {/* Auto-Skip Overlay for Broken Items */}
+            {(isBroken || isInvalidContent) && renderBrokenOverlay()}
+
             <header className="px-5 py-4 border-b border-[var(--q-border)] flex justify-between items-center bg-[var(--q-surface)] backdrop-blur-md shrink-0 z-10">
                 <div className="min-w-0 pr-4">
                     <h2 className="text-sm font-extrabold tracking-tight truncate uppercase italic">{question.questionRef}</h2>
@@ -273,7 +294,7 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
                           isRevealed={isRevealed}
                           onOptionSelect={handleOptionSelect}
                           showMedia={false} 
-                          isLocked={isLocked}
+                          isLocked={isLocked} // Will be true if broken
                           isEliminationMode={isEliminationMode}
                           eliminatedOptions={eliminatedOptions}
                           onEliminate={handleEliminate}
@@ -292,7 +313,7 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
             )}
             
             {toastMessage && (
-                 <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-amber-500 text-black px-4 py-2 rounded-lg shadow-lg font-bold text-xs uppercase z-50">
+                 <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-amber-500 text-black px-4 py-2 rounded-lg shadow-lg font-bold text-xs uppercase z-50 animate-fade-in-up">
                     {toastMessage}
                  </div>
             )}

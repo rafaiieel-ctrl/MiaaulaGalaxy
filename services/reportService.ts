@@ -4,6 +4,49 @@ import { saveData, loadData } from './storage';
 import * as srs from './srsService';
 
 const LS_REPORTS_KEY = 'revApp_attempt_reports_v1';
+const LS_INVALID_ITEMS_KEY = 'revApp_invalid_items_v1';
+
+export interface InvalidItemReport {
+    id: string;
+    questionRef: string;
+    lawRef?: string;
+    correctAnswer: string;
+    missingOptions: string[]; // List of keys (A, B...) that are empty
+    hasRawBlock: boolean;
+    textSnippet: string;
+    timestamp: string;
+    sessionId?: string;
+}
+
+/**
+ * Logs a broken question for batch correction.
+ */
+export async function logInvalidItem(question: Question, missingKeys: string[]): Promise<void> {
+    try {
+        const report: InvalidItemReport = {
+            id: question.id,
+            questionRef: question.questionRef,
+            lawRef: question.lawRef,
+            correctAnswer: question.correctAnswer,
+            missingOptions: missingKeys,
+            hasRawBlock: !!question.rawImportBlock,
+            textSnippet: (question.questionText || '').slice(0, 200),
+            timestamp: new Date().toISOString(),
+            sessionId: (window as any).__MIAAULA_SESSION_ID__
+        };
+
+        const existing = await loadData<InvalidItemReport[]>(LS_INVALID_ITEMS_KEY) || [];
+        
+        // Avoid duplicate logs for the same ID
+        if (!existing.some(i => i.id === report.id)) {
+            const updated = [report, ...existing];
+            await saveData(LS_INVALID_ITEMS_KEY, updated);
+            console.warn('[ReportService] Item inválido registrado para correção:', report);
+        }
+    } catch (e) {
+        console.error('[ReportService] Falha ao registrar item inválido:', e);
+    }
+}
 
 /**
  * Salva um novo relatório de tentativa.
