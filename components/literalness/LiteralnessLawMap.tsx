@@ -1,7 +1,7 @@
 
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { LiteralnessCard, Question, Flashcard } from '../../types';
-import { useQuestionState } from '../../contexts/QuestionContext';
+import { useQuestionState, useQuestionDispatch } from '../../contexts/QuestionContext';
 import { useFlashcardState, useFlashcardDispatch } from '../../contexts/FlashcardContext';
 import { useSettings } from '../../contexts/SettingsContext';
 import { useLiteralnessDispatch } from '../../contexts/LiteralnessContext';
@@ -14,9 +14,11 @@ import {
 } from '../icons';
 import * as engine from '../../services/activityEngine';
 import * as srs from '../../services/srsService';
+import { nucleusRepo } from '../../services/repositoryService'; // Import Repo
 import ConfirmationModal from '../ConfirmationModal';
 import LiteralnessEditorModal from './LiteralnessEditorModal';
 import MoveArticleModal from './MoveArticleModal';
+import DeleteArticleModal from './DeleteArticleModal'; // New Import
 import StudySessionModal from '../StudySessionModal';
 import FlashcardStudySessionModal from '../FlashcardStudySessionModal';
 import PairMatchGame from '../pairmatch/PairMatchGame'; 
@@ -104,8 +106,9 @@ const LiteralnessLawMap: React.FC<LiteralnessLawMapProps> = ({ cards, onViewArti
     const { deleteCards, updateCard, moveCardToLaw } = useLiteralnessDispatch();
     const allQuestions = useQuestionState();
     const allFlashcards = useFlashcardState();
-    const { updateBatchFlashcards } = useFlashcardDispatch();
-    const { settings, updateGameRecord, addPairMatchHistory, logDailyActivity } = useSettings();
+    const { updateBatchFlashcards, deleteFlashcards } = useFlashcardDispatch();
+    const { deleteQuestions } = useQuestionDispatch();
+    const { settings } = useSettings();
     
     const [internalLawId, setInternalLawId] = useState<string | null>(null);
     const selectedLawId = activeLawId !== undefined ? activeLawId : internalLawId;
@@ -191,6 +194,26 @@ const LiteralnessLawMap: React.FC<LiteralnessLawMapProps> = ({ cards, onViewArti
     const handleVisualUpdate = (card: LiteralnessCard, updates: Partial<LiteralnessCard>) => {
         updateCard({ ...card, ...updates });
         setOpenMenuCardId(null);
+    };
+
+    const handleConfirmDelete = async (card: LiteralnessCard) => {
+        try {
+            // 1. Delete Nucleus and Children via Repo (Source of Truth)
+            const { deletedQuestions, deletedFlashcards } = await nucleusRepo.deleteNucleus(card.id);
+            
+            // 2. Sync In-Memory State via Context Dispatches
+            // Remove Nucleus from Context
+            deleteCards([card.id]);
+            
+            // Remove Children from Contexts
+            if (deletedQuestions.length > 0) deleteQuestions(deletedQuestions);
+            if (deletedFlashcards.length > 0) deleteFlashcards(deletedFlashcards);
+            
+            setCardToDelete(null);
+            alert("Lote removido com sucesso!");
+        } catch (e: any) {
+            alert("Erro ao excluir lote: " + e.message);
+        }
     };
 
     if (!selectedLawId) {
@@ -347,7 +370,15 @@ const LiteralnessLawMap: React.FC<LiteralnessLawMapProps> = ({ cards, onViewArti
                 })}
             </div>
 
-            <ConfirmationModal isOpen={!!cardToDelete} onClose={() => setCardToDelete(null)} onConfirm={() => deleteCards([cardToDelete!.id])} title="Excluir Artigo?"><p>Deseja remover permanentemente <strong>{cardToDelete?.article}</strong>?</p></ConfirmationModal>
+            {cardToDelete && (
+                <DeleteArticleModal 
+                    isOpen={!!cardToDelete} 
+                    onClose={() => setCardToDelete(null)} 
+                    card={cardToDelete} 
+                    onConfirm={handleConfirmDelete} 
+                />
+            )}
+
             {cardToEdit && <LiteralnessEditorModal isOpen={true} onClose={() => setCardToEdit(null)} card={cardToEdit} />}
             {cardToMove && (
                 <MoveArticleModal 
@@ -367,7 +398,7 @@ const LiteralnessLawMap: React.FC<LiteralnessLawMapProps> = ({ cards, onViewArti
                     title={activeQuestionSession.title}
                     questions={activeQuestionSession.questions}
                     context="session"
-                    onSessionFinished={() => logDailyActivity('COMPLETE_QUESTIONS')}
+                    // Removed logDailyActivity here to avoid double counting if called internally
                 />
             )}
             
@@ -377,7 +408,7 @@ const LiteralnessLawMap: React.FC<LiteralnessLawMapProps> = ({ cards, onViewArti
                     onClose={() => setActiveFlashcardSession(null)}
                     title={activeFlashcardSession.title}
                     cards={activeFlashcardSession.cards}
-                    onSessionFinished={() => logDailyActivity('COMPLETE_FLASHCARDS')}
+                    // Removed logDailyActivity here to avoid double counting if called internally
                 />
             )}
 
@@ -391,7 +422,7 @@ const LiteralnessLawMap: React.FC<LiteralnessLawMapProps> = ({ cards, onViewArti
                             if (updatedItems.length > 0) {
                                 updateBatchFlashcards(updatedItems.map(f => ({ id: f.id, ...f })));
                             }
-                            logDailyActivity('PLAY_PAIR_MATCH');
+                            // Removed logDailyActivity here to avoid double counting if called internally
                         }}
                         onExit={() => setActivePairSession(null)}
                         settings={settings}

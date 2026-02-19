@@ -1,3 +1,4 @@
+
 import { Question, Flashcard, LiteralnessCard, AppSettings, ImportReport, ImportDetail, ImportStagingData, ImportEntityType, ImportCountDetail, LessonNode, Gap, StudyStep, LessonStatus } from '../types';
 import * as srs from './srsService';
 import * as idGen from './idGenerator';
@@ -238,7 +239,13 @@ const processLeiSecaImport = (
             warningsCount: parsed.issues.length
         },
         counts,
-        details: [...details, ...parsed.issues.map(e => ({ entityType: 'meta' as ImportEntityType, ref: 'PARSER', action: 'NORMALIZED' as any, reasonCode: 'WARNING', message: e }))]
+        details: [...details, ...parsed.issues.map(e => ({ 
+            entityType: 'meta' as ImportEntityType, 
+            ref: 'PARSER', 
+            action: 'NORMALIZED' as any, 
+            reasonCode: 'WARNING', 
+            message: `[Line ${e.line}] ${e.message} (${e.suggestion})` 
+        }))]
     };
 
     // Atomic Fail Safety: If failed, return empty staging

@@ -89,6 +89,51 @@ export async function dbDelete(storeName: string, key: string): Promise<void> {
     return new Promise((resolve) => tx.oncomplete = () => resolve());
 }
 
+/**
+ * ATOMIC BATCH DELETE
+ * Deletes a Nucleus and ALL associated Content and Progress in a single transaction.
+ */
+export async function deleteAtomicBatch(litRef: string): Promise<void> {
+    const db = await openDB();
+    
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction([STORES.NUCLEUS, STORES.CONTENT, STORES.PROGRESS], 'readwrite');
+        
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(new Error('Transaction aborted'));
+
+        // 1. Delete Nucleus
+        tx.objectStore(STORES.NUCLEUS).delete(litRef);
+
+        // 2. Delete Content (Questions, Gaps, Flashcards) linked to this LitRef
+        const contentStore = tx.objectStore(STORES.CONTENT);
+        const contentIndex = contentStore.index('litRef');
+        const contentReq = contentIndex.openKeyCursor(IDBKeyRange.only(litRef));
+        
+        contentReq.onsuccess = (e) => {
+            const cursor = (e.target as IDBRequest).result;
+            if (cursor) {
+                contentStore.delete(cursor.primaryKey);
+                cursor.continue();
+            }
+        };
+
+        // 3. Delete Progress (History) linked to this LitRef
+        const progressStore = tx.objectStore(STORES.PROGRESS);
+        const progressIndex = progressStore.index('litRef');
+        const progressReq = progressIndex.openKeyCursor(IDBKeyRange.only(litRef));
+        
+        progressReq.onsuccess = (e) => {
+            const cursor = (e.target as IDBRequest).result;
+            if (cursor) {
+                progressStore.delete(cursor.primaryKey);
+                cursor.continue();
+            }
+        };
+    });
+}
+
 // --- SPECIFIC KEY-VAL HELPERS (Legacy Support) ---
 
 export async function loadData<T>(key: string): Promise<T | null> {

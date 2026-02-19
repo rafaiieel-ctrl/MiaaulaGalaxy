@@ -4,6 +4,7 @@ import { LiteralnessCard, Question, Flashcard } from '../types';
 import * as storage from '../services/storage';
 import * as idGen from '../services/idGenerator';
 import * as srs from '../services/srsService';
+import { nucleusRepo } from '../services/repositoryService'; // Import Repo
 
 const LiteralnessStateContext = createContext<LiteralnessCard[] | undefined>(undefined);
 const LiteralnessDispatchContext = createContext<any | undefined>(undefined);
@@ -129,11 +130,25 @@ export const LiteralnessProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }, [cards, updateCard]);
 
     const deleteCards = useCallback(async (ids: string[]) => {
+        // Now using repository for atomic delete if single ID, or looping if multiple
+        // BUT the UI calls repository.deleteNucleus FIRST, then calls this to sync state.
+        // So here we primarily need to update the React State.
+        // We will keep the DB call here as fallback for direct usage, but in LawMap flow it's redundant but safe.
+        
         for (const id of ids) {
-            await storage.dbDelete(storage.STORES.NUCLEUS, id);
+             // We use repository just in case, but usually this is called after repo delete
+             // However, for pure context usage, we should ensure DB sync.
+             // Since deleteNucleus is atomic, we can just remove from state here
+             // assuming the caller handled the DB.
+             // If caller is NOT LawMap (e.g. generic cleanup), we should call repo.
+             
+             // Check if it exists in state to avoid unnecessary DB calls if already removed
+             if (cards.some(c => c.id === id)) {
+                 await storage.dbDelete(storage.STORES.NUCLEUS, id);
+             }
         }
         setCards(prev => prev.filter(c => !ids.includes(c.id)));
-    }, []);
+    }, [cards]);
 
     const dispatch = useMemo(() => ({ addBatchCards, updateCard, deleteCards, moveCardToLaw }), [addBatchCards, updateCard, deleteCards, moveCardToLaw]);
 
