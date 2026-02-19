@@ -1,7 +1,7 @@
 
 import React, { useMemo } from 'react';
 import { Question, EvidenceItem } from '../types';
-import { CheckCircleIcon, XCircleIcon, LockClosedIcon, TrashIcon, ScaleIcon } from './icons';
+import { CheckCircleIcon, XCircleIcon, LockClosedIcon, TrashIcon, ScaleIcon, ExclamationTriangleIcon } from './icons';
 import QuestionExplanationBlocks from './QuestionExplanationBlocks';
 import PromptText from './ui/PromptText';
 import { sanitizeOptionText } from '../services/questionParser';
@@ -21,7 +21,7 @@ interface QuestionViewerProps {
     highlightText?: string;
     
     evidence?: { stem: EvidenceItem[], options: Record<string, EvidenceItem[]> } | undefined;
-    orderedKeys?: string[]; // DEPRECATED: Ignored now to enforce stable order
+    orderedKeys?: string[]; // DEPRECATED: Ignored now
 }
 
 const QuestionViewer: React.FC<QuestionViewerProps> = ({ 
@@ -135,30 +135,29 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
         );
     };
 
-    // Determine list of keys to render for Standard Mode
-    // STRICT ALPHABETICAL SORT - DISABLES SHUFFLE VISUALLY
-    const keysToRender = useMemo(() => {
-        const allowedKeys = ['A', 'B', 'C', 'D', 'E'];
+    // ALWAYS RENDER A-E FOR STABILITY (Standard Mode)
+    // Map keys to their content and valid status
+    const optionsState = useMemo(() => {
+        const ALL_KEYS = ['A', 'B', 'C', 'D', 'E'];
         
-        // Defensive check: Only include keys that actually have content
-        const validAvailableKeys = Object.keys(question.options || {})
-            .filter(k => {
-                if (!allowedKeys.includes(k)) return false;
-                const val = question.options[k];
-                if (!val || typeof val !== 'string' || val.trim() === '') return false;
-                
-                // HARDENING: Filter bad option text patterns
-                const lower = val.trim().toLowerCase();
-                if (lower === 'correta' || lower === 'incorreta') return false;
-                if (lower.includes('fechamento=')) return false;
-                if (lower === '—') return false;
-
-                return true;
-            });
-
-        // Always return alphabetically sorted keys (A, B, C...) regardless of input order or shuffle prop
-        return validAvailableKeys.sort();
+        return ALL_KEYS.map(key => {
+            const raw = question.options[key];
+            const clean = sanitizeOptionText(raw as string);
+            const isValid = clean.length > 0;
+            return { 
+                key, 
+                text: isValid ? clean : "(Alternativa vazia ou inválida - Verifique o cadastro)", 
+                isDisabled: !isValid 
+            };
+        });
     }, [question.options]);
+
+    // Check if the correct answer points to a disabled option
+    const isCorrectAnswerInvalid = useMemo(() => {
+        if (isJudgementMode) return false;
+        const correctOpt = optionsState.find(o => o.key === question.correctAnswer);
+        return correctOpt ? correctOpt.isDisabled : true; // Invalid if points to broken option or missing key
+    }, [optionsState, question.correctAnswer, isJudgementMode]);
 
     return (
         <div className={`space-y-6 pb-10 ${className}`}>
@@ -168,6 +167,16 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                 <div className="flex flex-col gap-4 mb-4">
                     {question.questionImage && <img src={question.questionImage} alt="Questão" className="max-w-full rounded-lg max-h-80 object-contain mx-auto bg-black/20" />}
                     {question.questionAudio && <audio controls src={question.questionAudio} className="w-full" />}
+                </div>
+            )}
+
+            {/* Warning Banner for Broken Data */}
+            {isCorrectAnswerInvalid && !isJudgementMode && (
+                <div className="bg-rose-500/10 border border-rose-500/20 p-3 rounded-lg flex items-center gap-3 animate-fade-in mb-4">
+                    <ExclamationTriangleIcon className="w-5 h-5 text-rose-500" />
+                    <p className="text-xs text-rose-200">
+                        <strong>Atenção:</strong> O gabarito desta questão ({question.correctAnswer}) aponta para uma alternativa inválida. Corrija o cadastro.
+                    </p>
                 </div>
             )}
 
@@ -251,23 +260,21 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                 ) : (
                     /* STANDARD MULTIPLE CHOICE UI */
                     <div className={`space-y-2 transition-all duration-500 ${isLocked ? 'opacity-30 filter blur-[3px] pointer-events-none' : 'opacity-100'}`} id="answers-block">
-                        {keysToRender.map((key, index) => {
-                            const value = question.options[key];
-                            if (!value || value.trim() === '') return null;
-                            
-                            const displayValue = sanitizeOptionText(value as string);
-                            if (!displayValue) return null;
-
+                        {optionsState.map(({ key, text, isDisabled }, index) => {
                             const isEliminated = eliminatedOptions.includes(key);
                             const isSelected = selectedOption === key;
                             const isCorrect = question.correctAnswer === key;
                             const highlights = evidence?.options[key]; 
                             
-                            const visualLabel = String.fromCharCode(65 + index); 
+                            const visualLabel = String.fromCharCode(65 + index); // A, B, C... (Fixed Order)
                             
                             let btnClass = "w-full text-left p-3.5 rounded-xl border-2 transition-all flex gap-3 items-start group ";
                             
-                            if (isEliminated) {
+                            // Style Logic
+                            if (isDisabled) {
+                                // Invalid Option State
+                                btnClass += "bg-black/20 border-white/5 text-slate-600 cursor-not-allowed italic opacity-70";
+                            } else if (isEliminated) {
                                 btnClass += "bg-slate-900/50 border-transparent opacity-40 grayscale decoration-slate-500 line-through cursor-not-allowed";
                             } else if (isRevealed) {
                                 if (isCorrect) {
@@ -290,14 +297,16 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                             return (
                                 <button
                                     key={key}
-                                    onClick={() => handleOptionClick(key)}
-                                    disabled={isRevealed || (isLocked)}
+                                    onClick={() => !isDisabled && handleOptionClick(key)}
+                                    disabled={isDisabled || isRevealed || (isLocked)}
                                     className={btnClass}
+                                    title={isDisabled ? "Opção inválida ou vazia no cadastro." : undefined}
                                 >
-                                    <strong className={`shrink-0 text-base ${!isRevealed && !isSelected && !isEliminated ? 'text-sky-500 group-hover:text-sky-400' : 'text-current'}`}>{visualLabel})</strong>
+                                    <strong className={`shrink-0 text-base ${!isDisabled && !isRevealed && !isSelected && !isEliminated ? 'text-sky-500 group-hover:text-sky-400' : 'text-current'}`}>{visualLabel})</strong>
                                     <span className="leading-snug pt-0.5 text-sm md:text-base w-full">
-                                        <PromptText text={displayValue} highlights={highlights} />
+                                        <PromptText text={text} highlights={highlights} />
                                     </span>
+                                    {isDisabled && <ExclamationTriangleIcon className="w-4 h-4 ml-auto shrink-0 text-slate-600" />}
                                     {isRevealed && isCorrect && <CheckCircleIcon className="w-5 h-5 ml-auto shrink-0 text-emerald-400" />}
                                     {isRevealed && isSelected && !isCorrect && <XCircleIcon className="w-5 h-5 ml-auto shrink-0 text-rose-400" />}
                                     {!isRevealed && isEliminated && <TrashIcon className="w-4 h-4 ml-auto shrink-0 text-slate-600" />}

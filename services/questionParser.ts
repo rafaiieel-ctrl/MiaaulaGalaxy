@@ -15,17 +15,27 @@ export function sanitizeOptionText(text: string | undefined): string {
     
     let clean = text.trim();
 
-    // 1. Immediate rejection of known bad patterns (Metadata leaks that look like options)
-    const lower = clean.toLowerCase();
-    if (lower === 'correta' || lower === 'incorreta' || lower.startsWith('erradas=') || lower.startsWith('fechamento=')) {
-        return ''; // Mark as invalid/empty
+    // 1. Specific Metadata Cleanups requested
+    if (/fechamento=/i.test(clean)) {
+        clean = clean.split(/fechamento=/i)[0].trim();
     }
 
-    // 2. Remove trailing metadata tags
+    // 2. Remove other common metadata tags
     const METADATA_LEAK_REGEX = /(?:^|[;\s]+)(?:P[0-7]\s*[=:]|GUIA_TRAPSCAN|TRAPSCAN_EXIGIDO|WRONG_DIAGNOSIS|Erradas=|Fechamento=)[\s\S]*$/i;
     clean = clean.replace(METADATA_LEAK_REGEX, '');
     
-    return clean.replace(/[;]+$/, '').trim();
+    // 3. Remove trailing punctuation artifacts
+    clean = clean.replace(/[;]+$/, '').trim();
+
+    // 4. Validate resulting text content
+    const lower = clean.toLowerCase();
+    const invalidKeywords = ['correta', 'incorreta', '—', '-', 'nula'];
+    
+    if (clean.length === 0 || invalidKeywords.includes(lower)) {
+        return ''; // Mark as invalid/empty
+    }
+
+    return clean;
 }
 
 /**
@@ -140,25 +150,25 @@ export function ensureQuestionOptions(q: Question): Question {
         
         if (hasBadValue) {
             isCorrupted = true;
-            console.warn(`[QuestionParser] Detected corrupted options in ${q.questionRef}. Triggering re-parse.`);
         }
     }
 
     // 2. If valid and not corrupted, return sanitized version
     if (!isCorrupted && q.options) {
-        let validCount = 0;
         const cleaned: any = {};
+        let hasChanges = false;
+        
         Object.keys(q.options).forEach(k => {
             // @ts-ignore
             const val = q.options[k];
             const cleanVal = sanitizeOptionText(val);
+            if (val !== cleanVal) hasChanges = true;
             if (cleanVal) {
                 cleaned[k] = cleanVal;
-                validCount++;
             }
         });
         
-        if (validCount >= 2) {
+        if (hasChanges) {
              return { ...q, options: cleaned };
         }
     }

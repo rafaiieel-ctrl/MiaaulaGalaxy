@@ -65,46 +65,28 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
 
     const isInvalidContent = !allowGaps && !isStrictQuestion(question);
 
-    // --- HARDENING: Validate Option Count (Hotfix) ---
-    // If standard multiple choice question (not C/E) has < 2 valid options, skip it.
-    const isValidForRender = useMemo(() => {
-        if (allowGaps || !question.options) return true;
-        
-        // Check for C/E types first
-        const type = (question.questionType || '').toUpperCase();
-        const isJudgment = type.includes('C/E') || type.includes('CERTO') || type.includes('JULGAMENTO');
-        if (isJudgment) return true; // C/E logic handles itself
-
-        // Standard logic: Check count of non-empty, non-garbage options
-        const validCount = Object.values(question.options).filter(v => {
-            if (!v || !sanitizeOptionText(v as string)) return false;
-            return true;
-        }).length;
-
-        return validCount >= 2;
-    }, [question, allowGaps]);
+    // --- RELAXED VALIDATION: Allow rendering even with fewer options to debug data ---
+    // If standard multiple choice question (not C/E) has garbage options, we still show it with disabled buttons.
+    const isValidForRender = true; 
 
     useEffect(() => {
-        if (isInvalidContent || !isValidForRender) {
+        if (isInvalidContent) {
             console.warn(`[QuestionRunner] Conteúdo inválido/incompleto detectado (${question.id}). Pulando...`);
             if (onNext) {
                 const t = setTimeout(onNext, 100);
                 return () => clearTimeout(t);
             }
         }
-    }, [question.id, isInvalidContent, isValidForRender, onNext]);
+    }, [question.id, isInvalidContent, onNext]);
     
-    // --- SHUFFLE LOGIC REMOVED (Revert) ---
-    // OrderedKeys remains undefined/empty, relying on Viewer default sort (A-E)
-
     const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
 
-    if (isInvalidContent || !isValidForRender) {
+    if (isInvalidContent) {
         return (
             <div className="flex flex-col items-center justify-center h-full p-10 text-center space-y-4">
                 <ExclamationTriangleIcon className="w-12 h-12 text-amber-500 opacity-50" />
                 <h3 className="text-xl font-bold text-white">Conteúdo Incompatível</h3>
-                <p className="text-slate-400 text-sm">Esta questão parece estar incompleta ou corrompida. Pulando...</p>
+                <p className="text-slate-400 text-sm">Esta questão parece ser uma lacuna em modo questão. Pulando...</p>
                 <button onClick={onNext} className="bg-white/10 px-6 py-2 rounded-lg text-sm font-bold uppercase hover:bg-white/20">
                     Forçar Pulo
                 </button>
