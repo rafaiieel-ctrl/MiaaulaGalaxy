@@ -4,7 +4,7 @@ import { Question, EvidenceItem } from '../types';
 import { CheckCircleIcon, XCircleIcon, LockClosedIcon, TrashIcon, ScaleIcon, ExclamationTriangleIcon } from './icons';
 import QuestionExplanationBlocks from './QuestionExplanationBlocks';
 import PromptText from './ui/PromptText';
-import { sanitizeOptionText } from '../services/questionParser';
+import { getSafeQuestionView, sanitizeOptionText } from '../services/questionParser';
 
 interface QuestionViewerProps {
     question: Question;
@@ -21,7 +21,7 @@ interface QuestionViewerProps {
     highlightText?: string;
     
     evidence?: { stem: EvidenceItem[], options: Record<string, EvidenceItem[]> } | undefined;
-    orderedKeys?: string[]; // DEPRECATED: Ignored now
+    orderedKeys?: string[]; 
 }
 
 const QuestionViewer: React.FC<QuestionViewerProps> = ({ 
@@ -40,6 +40,11 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
     orderedKeys
 }) => {
     
+    // --- SAFE VIEW LAYER ---
+    // Create a safe, non-mutated view of the question where we try to recover 
+    // any missing options from the raw block.
+    const safeQuestion = useMemo(() => getSafeQuestionView(question), [question]);
+
     const handleOptionClick = (key: string) => {
         if (isLocked) return;
 
@@ -57,27 +62,27 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
 
     // Detect if this should be rendered as a Gap/Cloze question
     const isGapMode = useMemo(() => {
-        if (question.isGapType) return true;
-        const text = question.questionText || '';
+        if (safeQuestion.isGapType) return true;
+        const text = safeQuestion.questionText || '';
         return /\{\{.+?\}\}|_{3,}/.test(text);
-    }, [question]);
+    }, [safeQuestion]);
 
     // Detect if this is a True/False (Certo/Errado) Judgement question
     const isJudgementMode = useMemo(() => {
         if (isGapMode) return false;
-        const type = (question.questionType || '').toUpperCase();
-        const bank = (question.bank || '').toUpperCase();
+        const type = (safeQuestion.questionType || '').toUpperCase();
+        const bank = (safeQuestion.bank || '').toUpperCase();
         
         // Explicit Type or Bank detection
         if (type.includes('C/E') || type.includes('CERTO') || type.includes('JULGAMENTO') || type.includes('V/F')) return true;
         if (bank.includes('CESPE') || bank.includes('CEBRASPE')) return true;
 
-        // Content detection (if options contains "Certo" and "Errado")
-        const optValues = Object.values(question.options || {}).map(v => ((v as string) || '').trim().toUpperCase());
+        // Content detection
+        const optValues = Object.values(safeQuestion.options || {}).map(v => ((v as string) || '').trim().toUpperCase());
         if (optValues.includes('CERTO') && optValues.includes('ERRADO')) return true;
         
         return false;
-    }, [question, isGapMode]);
+    }, [safeQuestion, isGapMode]);
 
     // Resolve keys for Certo and Errado
     const judgementKeys = useMemo(() => {
@@ -85,30 +90,26 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
         let rightKey = '';
         let wrongKey = '';
 
-        // 1. Try finding explicit text in options
-        Object.entries(question.options || {}).forEach(([k, v]) => {
+        Object.entries(safeQuestion.options || {}).forEach(([k, v]) => {
             const val = ((v as string) || '').toUpperCase().trim();
             if (val === 'CERTO') rightKey = k;
             if (val === 'ERRADO') wrongKey = k;
         });
 
-        // 2. Fallback strategies if text didn't match perfectly but mode is detected
         if (!rightKey || !wrongKey) {
-            // Standard C/E mapping (C=Certo, E=Errado)
-            if (question.options['C'] && !question.options['A']) {
+            if (safeQuestion.options['C'] && !safeQuestion.options['A']) {
                 rightKey = 'C'; wrongKey = 'E';
             } else {
-                // Standard A/B mapping
                 rightKey = 'A'; wrongKey = 'B';
             }
         }
         
         return { rightKey, wrongKey };
-    }, [isJudgementMode, question.options]);
+    }, [isJudgementMode, safeQuestion.options]);
     
     const renderQuestionText = () => {
-        if (!isGapMode && highlightText && question.questionText.includes(highlightText)) {
-            const parts = question.questionText.split(highlightText);
+        if (!isGapMode && highlightText && safeQuestion.questionText.includes(highlightText)) {
+            const parts = safeQuestion.questionText.split(highlightText);
             return (
                 <span>
                     {parts.map((part, i) => (
@@ -127,7 +128,7 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
         
         return (
             <PromptText 
-                text={question.questionText} 
+                text={safeQuestion.questionText} 
                 mode={isGapMode ? 'gap' : 'plain'}
                 revealExpected={isRevealed}
                 highlights={evidence?.stem} 
@@ -135,13 +136,12 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
         );
     };
 
-    // ALWAYS RENDER A-E FOR STABILITY (Standard Mode)
-    // Map keys to their content and valid status
+    // Calculate options from SAFE VIEW
     const optionsState = useMemo(() => {
         const ALL_KEYS = ['A', 'B', 'C', 'D', 'E'];
         
         return ALL_KEYS.map(key => {
-            const raw = question.options[key];
+            const raw = safeQuestion.options[key];
             const clean = sanitizeOptionText(raw as string);
             const isValid = clean.length > 0;
             return { 
@@ -150,23 +150,23 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                 isDisabled: !isValid 
             };
         });
-    }, [question.options]);
+    }, [safeQuestion.options]);
 
     // Check if the correct answer points to a disabled option
     const isCorrectAnswerInvalid = useMemo(() => {
         if (isJudgementMode) return false;
-        const correctOpt = optionsState.find(o => o.key === question.correctAnswer);
-        return correctOpt ? correctOpt.isDisabled : true; // Invalid if points to broken option or missing key
-    }, [optionsState, question.correctAnswer, isJudgementMode]);
+        const correctOpt = optionsState.find(o => o.key === safeQuestion.correctAnswer);
+        return correctOpt ? correctOpt.isDisabled : true; 
+    }, [optionsState, safeQuestion.correctAnswer, isJudgementMode]);
 
     return (
         <div className={`space-y-6 pb-10 ${className}`}>
             <div id="question-start-anchor" className="h-px w-full -mt-2"></div>
 
-            {showMedia && (question.questionImage || question.questionAudio) && (
+            {showMedia && (safeQuestion.questionImage || safeQuestion.questionAudio) && (
                 <div className="flex flex-col gap-4 mb-4">
-                    {question.questionImage && <img src={question.questionImage} alt="Questão" className="max-w-full rounded-lg max-h-80 object-contain mx-auto bg-black/20" />}
-                    {question.questionAudio && <audio controls src={question.questionAudio} className="w-full" />}
+                    {safeQuestion.questionImage && <img src={safeQuestion.questionImage} alt="Questão" className="max-w-full rounded-lg max-h-80 object-contain mx-auto bg-black/20" />}
+                    {safeQuestion.questionAudio && <audio controls src={safeQuestion.questionAudio} className="w-full" />}
                 </div>
             )}
 
@@ -175,7 +175,7 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                 <div className="bg-rose-500/10 border border-rose-500/20 p-3 rounded-lg flex items-center gap-3 animate-fade-in mb-4">
                     <ExclamationTriangleIcon className="w-5 h-5 text-rose-500" />
                     <p className="text-xs text-rose-200">
-                        <strong>Atenção:</strong> O gabarito desta questão ({question.correctAnswer}) aponta para uma alternativa inválida. Corrija o cadastro.
+                        <strong>Atenção:</strong> O gabarito desta questão ({safeQuestion.correctAnswer}) aponta para uma alternativa inválida ou vazia. O fallback de recuperação falhou.
                     </p>
                 </div>
             )}
@@ -217,7 +217,7 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                             className={`
                                 relative p-6 rounded-2xl border-2 flex flex-col items-center justify-center gap-2 transition-all active:scale-[0.98]
                                 ${isRevealed
-                                    ? (question.correctAnswer === judgementKeys.rightKey 
+                                    ? (safeQuestion.correctAnswer === judgementKeys.rightKey 
                                         ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400' 
                                         : (selectedOption === judgementKeys.rightKey ? 'bg-rose-500/20 border-rose-500 text-rose-400' : 'bg-white/5 border-white/5 text-slate-500 opacity-50'))
                                     : (selectedOption === judgementKeys.rightKey
@@ -237,7 +237,7 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                             className={`
                                 relative p-6 rounded-2xl border-2 flex flex-col items-center justify-center gap-2 transition-all active:scale-[0.98]
                                 ${isRevealed
-                                    ? (question.correctAnswer === judgementKeys.wrongKey 
+                                    ? (safeQuestion.correctAnswer === judgementKeys.wrongKey 
                                         ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400' 
                                         : (selectedOption === judgementKeys.wrongKey ? 'bg-rose-500/20 border-rose-500 text-rose-400' : 'bg-white/5 border-white/5 text-slate-500 opacity-50'))
                                     : (selectedOption === judgementKeys.wrongKey
@@ -263,7 +263,7 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                         {optionsState.map(({ key, text, isDisabled }, index) => {
                             const isEliminated = eliminatedOptions.includes(key);
                             const isSelected = selectedOption === key;
-                            const isCorrect = question.correctAnswer === key;
+                            const isCorrect = safeQuestion.correctAnswer === key;
                             const highlights = evidence?.options[key]; 
                             
                             const visualLabel = String.fromCharCode(65 + index); // A, B, C... (Fixed Order)
@@ -320,7 +320,7 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
             {isRevealed && (
                 <div className="animate-fade-in pt-6 border-t border-white/10">
                    <QuestionExplanationBlocks 
-                        question={question} 
+                        question={safeQuestion} 
                         userAnswer={selectedOption} 
                         showTitle={true}
                    />

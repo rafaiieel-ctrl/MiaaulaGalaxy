@@ -15,7 +15,7 @@ import { getText } from '../utils/i18nText';
 import { isStrictQuestion } from '../services/contentGate';
 import ConfirmationModal from './ConfirmationModal';
 import { useQuestionDispatch } from '../contexts/QuestionContext';
-import { sanitizeOptionText } from '../services/questionParser';
+import { getSafeQuestionView } from '../services/questionParser';
 
 interface QuestionRunnerProps {
     question: Question;
@@ -62,33 +62,59 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
     const { deleteQuestions, registerAttempt } = useQuestionDispatch();
     const scrollRef = useRef<HTMLDivElement>(null);
     const startTimeRef = useRef<number>(Date.now());
+    const [toastMessage, setToastMessage] = useState<string | null>(null);
 
     const isInvalidContent = !allowGaps && !isStrictQuestion(question);
 
-    // --- RELAXED VALIDATION: Allow rendering even with fewer options to debug data ---
-    // If standard multiple choice question (not C/E) has garbage options, we still show it with disabled buttons.
-    const isValidForRender = true; 
+    // --- INTEGRITY CHECK ---
+    // Check if the SAFE VIEW is playable. 
+    // It's unplayable if the correct answer points to an empty option.
+    const safeView = useMemo(() => getSafeQuestionView(question), [question]);
+    
+    // Check if it's C/E type first (usually safe as it doesn't need text options)
+    const isJudgement = safeView.questionType?.includes('C/E') || (safeView.bank?.includes('CESPE'));
+    
+    // Check if standard options are broken
+    const isBroken = useMemo(() => {
+        if (allowGaps || isJudgement) return false;
+        
+        const correctKey = safeView.correctAnswer;
+        // @ts-ignore
+        const optionText = safeView.options[correctKey];
+        
+        // If option text for correct answer is missing, it's broken.
+        return !optionText || optionText.trim().length === 0;
+    }, [safeView, allowGaps, isJudgement]);
 
     useEffect(() => {
-        if (isInvalidContent) {
-            console.warn(`[QuestionRunner] Conteúdo inválido/incompleto detectado (${question.id}). Pulando...`);
+        if (isInvalidContent || isBroken) {
+            const reason = isBroken ? "Gabarito aponta para alternativa vazia" : "Conteúdo inválido/incompleto";
+            console.warn(`[QuestionRunner] Skipped broken question (${question.id}). Reason: ${reason}`);
+            
+            // Show toast and auto-skip
+            setToastMessage(`Questão pulada: ${reason}`);
+            
             if (onNext) {
-                const t = setTimeout(onNext, 100);
+                const t = setTimeout(() => {
+                    setToastMessage(null);
+                    onNext();
+                }, 2000); // 2s delay to read toast
                 return () => clearTimeout(t);
             }
         }
-    }, [question.id, isInvalidContent, onNext]);
+    }, [question.id, isInvalidContent, isBroken, onNext]);
     
     const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
 
-    if (isInvalidContent) {
+    if (isInvalidContent || isBroken) {
         return (
-            <div className="flex flex-col items-center justify-center h-full p-10 text-center space-y-4">
-                <ExclamationTriangleIcon className="w-12 h-12 text-amber-500 opacity-50" />
-                <h3 className="text-xl font-bold text-white">Conteúdo Incompatível</h3>
-                <p className="text-slate-400 text-sm">Esta questão parece ser uma lacuna em modo questão. Pulando...</p>
-                <button onClick={onNext} className="bg-white/10 px-6 py-2 rounded-lg text-sm font-bold uppercase hover:bg-white/20">
-                    Forçar Pulo
+            <div className="flex flex-col items-center justify-center h-full p-10 text-center space-y-4 bg-slate-900 z-50 fixed inset-0">
+                <ExclamationTriangleIcon className="w-16 h-16 text-amber-500 animate-pulse" />
+                <h3 className="text-xl font-bold text-white">Conteúdo Corrompido</h3>
+                <p className="text-slate-400 text-sm max-w-xs">{toastMessage || "Detectando integridade..."}</p>
+                <div className="w-8 h-8 border-4 border-white/20 border-t-white rounded-full animate-spin"></div>
+                <button onClick={onNext} className="mt-4 text-xs text-slate-500 hover:text-white underline">
+                    Forçar Avanço Imediato
                 </button>
             </div>
         );
@@ -118,6 +144,7 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
         setHighlightAnchor(false);
         setIsDeleteConfirmOpen(false);
         startTimeRef.current = Date.now();
+        setToastMessage(null);
         
         if (scrollRef.current) {
             scrollRef.current.scrollTo({ top: 0, behavior: 'instant' });
@@ -262,6 +289,12 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
                     <LockClosedIcon className="w-4 h-4" />
                     {showBlockToast}
                 </div>
+            )}
+            
+            {toastMessage && (
+                 <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-amber-500 text-black px-4 py-2 rounded-lg shadow-lg font-bold text-xs uppercase z-50">
+                    {toastMessage}
+                 </div>
             )}
             
             {selectedOption && (
