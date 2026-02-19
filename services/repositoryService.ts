@@ -39,37 +39,88 @@ export const nucleusRepo = {
 
     /**
      * Persists imported batch ensuring immutability rules.
+     * IMPLEMENTS UPSERT AND CHILD REPLACEMENT STRATEGY.
      */
     async saveImportBatch(batch: { cards: LiteralnessCard[], questions: Question[], flashcards: Flashcard[] }) {
-        // Save to specialized stores for indexing
+        // 1. Upsert Nucleus Cards
+        // Since we are using put, it overwrites if ID exists.
+        // We assume IDs are Canonical DOC_KEYs now.
         await storage.dbPut(storage.STORES.NUCLEUS, batch.cards);
         
-        // Fix: Use CONTENT store and wrap items into the type/payload structure used by the app.
-        const questionsContent = batch.questions.map(q => ({
-            id: q.id,
-            litRef: srs.canonicalizeLitRef(q.lawRef || q.litRef),
-            type: 'QUESTION',
-            payload: q
-        }));
-
-        const flashcardsContent = batch.flashcards.map(fc => ({
-            id: fc.id,
-            litRef: srs.canonicalizeLitRef(fc.litRef || (fc.tags ? fc.tags.find(t => !['pair-match', 'literalness'].includes(t)) : undefined)),
-            type: fc.tags?.includes('pair-match') ? 'PAIR' : 'FLASHCARD',
-            payload: fc
-        }));
-
-        await storage.dbPut(storage.STORES.CONTENT, [...questionsContent, ...flashcardsContent]);
+        // 2. Handle Content Synchronization (Replace Children)
+        // For each card in the batch, we must ensure the DB state matches the batch state for its children.
+        // Any child in DB that is NOT in the batch must be deleted (Pruning).
         
-        // Sync with legacy stores for context compatibility
+        const contentStoreName = storage.STORES.CONTENT;
+        const db = await storage.openDB();
+        
+        for (const card of batch.cards) {
+            const litRef = card.id;
+
+            // A. Get existing children from DB for this Card
+            const existingItems = await storage.dbGetByIndex<any>(contentStoreName, 'litRef', litRef);
+            
+            // B. Get new children from Batch for this Card
+            const newQuestions = batch.questions.filter(q => srs.canonicalizeLitRef(q.lawRef) === litRef);
+            const newFlashcards = batch.flashcards.filter(fc => srs.isLinked(fc, litRef));
+            
+            const newIds = new Set<string>();
+            const contentPayloads: any[] = [];
+            
+            // Prepare new payloads
+            newQuestions.forEach(q => {
+                 newIds.add(q.id);
+                 contentPayloads.push({
+                    id: q.id,
+                    litRef: litRef,
+                    type: 'QUESTION',
+                    payload: q
+                 });
+            });
+            
+            newFlashcards.forEach(fc => {
+                newIds.add(fc.id);
+                contentPayloads.push({
+                    id: fc.id,
+                    litRef: litRef,
+                    type: fc.tags?.includes('pair-match') ? 'PAIR' : 'FLASHCARD',
+                    payload: fc
+                });
+            });
+            
+            // C. Identify Orphans (Exist in DB but not in New Batch)
+            const orphans = existingItems.filter(item => !newIds.has(item.id));
+            
+            // D. Delete Orphans
+            if (orphans.length > 0) {
+                console.log(`[Repository] Pruning ${orphans.length} orphans for ${litRef}`);
+                const tx = db.transaction(contentStoreName, 'readwrite');
+                const store = tx.objectStore(contentStoreName);
+                orphans.forEach(o => store.delete(o.id));
+                await new Promise(resolve => tx.oncomplete = resolve);
+            }
+            
+            // E. Upsert New Content
+            if (contentPayloads.length > 0) {
+                 await storage.dbPut(contentStoreName, contentPayloads);
+            }
+        }
+        
+        // Sync with legacy stores for context compatibility (keeping this for now as per original code)
         // (In a full migration, we'd remove the legacy loadData calls)
         const existingCards = await storage.loadData<LiteralnessCard[]>('revApp_literalness_v1') || [];
         const existingQs = await storage.loadData<Question[]>('revApp_questions_v5_react') || [];
         const existingFs = await storage.loadData<Flashcard[]>('revApp_flashcards_v1') || [];
 
-        const updatedCards = [...existingCards.filter(ec => !batch.cards.some(bc => bc.id === ec.id)), ...batch.cards];
-        const updatedQs = [...existingQs.filter(eq => !batch.questions.some(bq => bq.id === eq.id)), ...batch.questions];
-        const updatedFs = [...existingFs.filter(ef => !batch.flashcards.some(bf => bf.id === ef.id)), ...batch.flashcards];
+        // For Legacy Stores, we also need to apply the upsert/replace logic partially
+        // Filter out old versions of the cards we are importing
+        const batchCardIds = new Set(batch.cards.map(c => c.id));
+        const batchQuestionIds = new Set(batch.questions.map(q => q.id));
+        const batchFlashcardIds = new Set(batch.flashcards.map(f => f.id));
+
+        const updatedCards = [...existingCards.filter(ec => !batchCardIds.has(ec.id)), ...batch.cards];
+        const updatedQs = [...existingQs.filter(eq => !batchQuestionIds.has(eq.id)), ...batch.questions];
+        const updatedFs = [...existingFs.filter(ef => !batchFlashcardIds.has(ef.id)), ...batch.flashcards];
 
         await storage.saveData('revApp_literalness_v1', updatedCards);
         await storage.saveData('revApp_questions_v5_react', updatedQs);

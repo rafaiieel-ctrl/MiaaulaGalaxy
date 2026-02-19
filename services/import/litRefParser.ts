@@ -102,17 +102,20 @@ export const parseOfficialStrict = (text: string, settings: AppSettings): {
             const litRef = currentNucleus.id;
             const type = currentItemType || 'UNKNOWN';
             let idx = 1;
+            let stableId = '';
             
             if (type === 'QUESTION') {
-                const m = currentItem.q_ref?.match(/Q(\d+)/i);
-                idx = m ? parseInt(m[1]) : contents.length + 1;
+                const qRef = currentItem.q_ref || `Q${contents.length + 1}`;
+                stableId = idGen.generateQuestionKey(litRef, qRef);
                 if (!currentItem.questionText && currentItem.q_text) currentItem.questionText = currentItem.q_text;
                 currentReport!.counts.questions++;
             } else if (type === 'FLASHCARD') {
-                idx = contents.length + 1;
+                const fcRef = currentItem.fc_ref || `FC${contents.length + 1}`;
+                stableId = idGen.makeDeterministicId(litRef, 'FLASHCARD', fcRef);
                 currentReport!.counts.flashcards++;
             } else if (type === 'PAIR') {
-                idx = contents.length + 1;
+                const pairRef = currentItem.pair_ref || `PAIR${contents.length + 1}`;
+                stableId = idGen.makeDeterministicId(litRef, 'PAIR', pairRef);
                 currentReport!.counts.pairs++;
                 if (!currentItem.tags) currentItem.tags = [];
                 if (!currentItem.tags.includes('pair-match')) currentItem.tags.push('pair-match');
@@ -121,9 +124,9 @@ export const parseOfficialStrict = (text: string, settings: AppSettings): {
             if (!currentItem.lawRef) currentItem.lawRef = litRef;
 
             contents.push({
-                id: idGen.makeDeterministicId(litRef, type, idx),
+                id: stableId, // UPSERT KEY
                 litRef, type, idx,
-                payload: { ...currentItem }
+                payload: { ...currentItem, id: stableId } // Inject ID into payload
             });
             currentItem = null;
             currentItemType = null;
@@ -162,8 +165,9 @@ export const parseOfficialStrict = (text: string, settings: AppSettings): {
             }
             
             if (!hasError) {
+                const gapRef = `GAP-${xx}`;
                 contents.push({
-                    id: idGen.makeDeterministicId(currentNucleus.id, 'LACUNA', xx),
+                    id: idGen.makeDeterministicId(currentNucleus.id, 'LACUNA', gapRef),
                     litRef: currentNucleus.id,
                     type: 'LACUNA',
                     idx: parseInt(xx),
@@ -184,18 +188,43 @@ export const parseOfficialStrict = (text: string, settings: AppSettings): {
     flatEntries.forEach(entry => {
         const { key, value } = entry;
 
-        if (key === 'LIT_REF') {
+        if (key === 'LIT_REF' || key === 'ARTICLE') {
             flushItem(); processGaps();
-            const id = srs.canonicalizeLitRef(value);
-            currentNucleus = { id, importBatchId: batchId };
-            currentReport = {
-                litRef: id, status: 'SUCCESS', errors: [], warnings: [],
-                counts: { lacunas: 0, questions: 0, flashcards: 0, pairs: 0 },
-                detectedGaps: []
-            };
-            nuclei.push(currentNucleus);
-            reports.push(currentReport);
-        } 
+            
+            // If LIT_REF is provided, use it. If not, we will construct later when we have LAW_ID + ARTICLE
+            // But here we are iterating, so we might need to store temp state.
+            // Simplified: The logic assumes LIT_REF starts the block.
+            // If the user starts with ARTICLE and LAW_ID, we can construct the key.
+            
+            // For now, assume LIT_REF is the start or primary key. 
+            // If key is ARTICLE, check if we already have a nucleus.
+            
+            if (key === 'LIT_REF') {
+                const id = srs.canonicalizeLitRef(value);
+                currentNucleus = { id, litRefProvided: true, importBatchId: batchId };
+            } else if (key === 'ARTICLE') {
+                if (!currentNucleus) {
+                    currentNucleus = { article: value, importBatchId: batchId };
+                } else {
+                    currentNucleus.article = value;
+                }
+            }
+
+            if (!currentNucleus.reportCreated) {
+                currentReport = {
+                    litRef: '',
+                    status: 'SUCCESS', errors: [], warnings: [],
+                    counts: { lacunas: 0, questions: 0, flashcards: 0, pairs: 0 },
+                    detectedGaps: []
+                };
+                reports.push(currentReport);
+                currentNucleus.reportCreated = true;
+                nuclei.push(currentNucleus);
+            }
+        }
+        else if (key === 'LAW_ID') {
+            if (currentNucleus) currentNucleus.law_id = value;
+        }
         else if (key.startsWith('PHASE2_')) {
             const m = key.match(/^PHASE2_(LACUNA|CORRECT|OPT_[A-E])_(\d+)$/);
             if (m) {
@@ -261,6 +290,39 @@ export const parseOfficialStrict = (text: string, settings: AppSettings): {
 
     flushItem(); 
     processGaps();
+
+    // FINAL ID STABILIZATION PASS
+    nuclei.forEach((n, idx) => {
+        // If ID is missing but we have Law and Article, generate DOC_KEY
+        if (!n.id || !n.litRefProvided) {
+             if (n.law_id && n.article) {
+                 n.id = idGen.generateDocKey(n.law_id, n.article);
+             } else {
+                 // Fallback if malformed
+                 n.id = `DOC_${idx}_${Date.now()}`;
+             }
+        }
+        
+        // Update reports with final ID
+        if (reports[idx]) reports[idx].litRef = n.id;
+        
+        // Fix children linking
+        contents.filter(c => c.litRef === '' || c.litRef === undefined || (reports[idx] && c.litRef === reports[idx].litRef)).forEach(c => {
+             // If child doesn't have a litRef yet (from initial parse), assign parent
+             c.litRef = n.id;
+             
+             // RE-GENERATE QUESTION ID with Parent ID to ensure Q_KEY stability
+             if (c.type === 'QUESTION') {
+                 const qRef = c.payload.questionRef || c.payload.q_ref || `Q${c.idx}`;
+                 c.id = idGen.generateQuestionKey(n.id, qRef);
+                 c.payload.id = c.id;
+                 c.payload.lawRef = n.id;
+             } else if (c.type === 'LACUNA') {
+                 // Regenerate Gap ID to be safe
+                 c.id = idGen.makeDeterministicId(n.id, 'LACUNA', c.idx);
+             }
+        });
+    });
 
     return { batchId, nuclei, contents, reports };
 };
