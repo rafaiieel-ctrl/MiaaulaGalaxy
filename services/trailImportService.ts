@@ -239,13 +239,16 @@ const processLeiSecaImport = (
             warningsCount: parsed.issues.length
         },
         counts,
-        details: [...details, ...parsed.issues.map(e => ({ 
-            entityType: 'meta' as ImportEntityType, 
-            ref: 'PARSER', 
-            action: 'NORMALIZED' as any, 
-            reasonCode: 'WARNING', 
-            message: `[Line ${e.line}] ${e.message} (${e.suggestion})` 
-        }))]
+        details: [
+            ...details, 
+            ...parsed.issues.map(e => ({ 
+                entityType: 'meta' as ImportEntityType, 
+                ref: 'PARSER', 
+                action: 'NORMALIZED' as any, 
+                reasonCode: 'WARNING', 
+                message: `[Line ${e.line}] ${e.message} (${e.suggestion})` 
+            }))
+        ]
     };
 
     // Atomic Fail Safety: If failed, return empty staging
