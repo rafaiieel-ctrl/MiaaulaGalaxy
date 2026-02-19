@@ -14,6 +14,7 @@ interface QuestionExplanationBlocksProps {
     question: Question;
     userAnswer?: string | null;
     showTitle?: boolean;
+    orderedKeys?: string[]; // To map back to visual labels (A, B, C...)
 }
 
 // --- SUB-COMPONENTS ---
@@ -65,11 +66,31 @@ const TrapscanVisual: React.FC<{
 
 // --- MAIN COMPONENT ---
 
-const QuestionExplanationBlocks: React.FC<QuestionExplanationBlocksProps> = ({ question, userAnswer, showTitle = true }) => {
+const QuestionExplanationBlocks: React.FC<QuestionExplanationBlocksProps> = ({ question, userAnswer, showTitle = true, orderedKeys }) => {
     
     const isCorrect = userAnswer && question.correctAnswer && 
                       userAnswer.trim().toUpperCase().charAt(0) === question.correctAnswer.trim().toUpperCase().charAt(0);
     
+    // --- LABEL MAPPING LOGIC ---
+    const getVisualLabel = (key: string): string => {
+        if (!key) return '';
+        const normKey = key.trim().toUpperCase().charAt(0);
+        
+        // If we have shuffle info, map internal key -> index -> Visual Letter
+        if (orderedKeys && orderedKeys.length > 0) {
+            const idx = orderedKeys.indexOf(normKey);
+            if (idx !== -1) {
+                return String.fromCharCode(65 + idx); // 0=A, 1=B...
+            }
+        }
+        
+        // Default: key itself
+        return normKey;
+    };
+
+    const visualUserAnswer = userAnswer ? getVisualLabel(userAnswer) : '';
+    const visualCorrectAnswer = getVisualLabel(question.correctAnswer);
+
     // Data Parsing
     const getField = (key: keyof Question, alias?: string) => {
         return question[key] || (alias ? (question as any)[alias] : undefined);
@@ -94,11 +115,22 @@ const QuestionExplanationBlocks: React.FC<QuestionExplanationBlocksProps> = ({ q
     
     const generalDiagnosis = getField('wrongDiagnosis');
 
-    // Logic
+    // Helper: is content strictly technical/empty?
+    const isTechnicalJunk = (text: any) => {
+        if (!text) return true;
+        const s = String(text).toUpperCase().trim();
+        return ['OK', 'CORRETA', 'GABARITO', 'ALT_ERRADA', 'OPCAO_ERRADA', 'DISTRACTOR'].includes(s);
+    };
+
     const hasContent = (data: any) => {
         if (!data) return false;
-        if (typeof data === 'string') return data.trim().length > 0 && data !== '—';
-        if (typeof data === 'object') return Object.keys(data).length > 0;
+        if (typeof data === 'string') {
+            return data.trim().length > 0 && data !== '—' && !isTechnicalJunk(data);
+        }
+        if (typeof data === 'object') {
+            // Check if object has at least one non-junk value
+            return Object.values(data).some(v => !isTechnicalJunk(v));
+        }
         return true;
     };
 
@@ -106,8 +138,13 @@ const QuestionExplanationBlocks: React.FC<QuestionExplanationBlocksProps> = ({ q
         if (isCorrect || !userAnswer) return null;
         // Clean user answer to just the letter
         const cleanUserAns = userAnswer.charAt(0).toUpperCase();
+        
         if (diagnosisMapParsed && diagnosisMapParsed[cleanUserAns]) {
-            return diagnosisMapParsed[cleanUserAns];
+            const raw = diagnosisMapParsed[cleanUserAns];
+            // Remove technical prefixes like "A=" or "A:" if present in value
+            // (Often import creates { A: "A: The error..." })
+            const cleaned = String(raw).replace(/^[A-E]\s*[:=]\s*/i, '');
+            return isTechnicalJunk(cleaned) ? null : cleaned;
         }
         return generalDiagnosis;
     }, [isCorrect, userAnswer, diagnosisMapParsed, generalDiagnosis]);
@@ -131,7 +168,8 @@ const QuestionExplanationBlocks: React.FC<QuestionExplanationBlocksProps> = ({ q
                             <ExclamationTriangleIcon className="w-4 h-4" />
                         </div>
                         <div>
-                            <span className="text-[9px] font-black text-rose-500 uppercase tracking-widest block mb-1">Seu Erro ({userAnswer})</span>
+                            {/* USE VISUAL LABEL (Post-Shuffle) */}
+                            <span className="text-[9px] font-black text-rose-500 uppercase tracking-widest block mb-1">Seu Erro ({visualUserAnswer})</span>
                             {hasContent(specificErrorMsg) ? (
                                 <div className="text-sm text-white font-bold leading-snug">
                                     {String(specificErrorMsg).includes('|') ? (
@@ -160,7 +198,8 @@ const QuestionExplanationBlocks: React.FC<QuestionExplanationBlocksProps> = ({ q
                  </div>
                  <div>
                      <span className="text-[9px] text-emerald-500 font-black uppercase tracking-widest block">Gabarito Oficial</span>
-                     <p className="text-sm font-bold text-white">Alternativa <span className="text-emerald-400 text-lg ml-1">{question.correctAnswer}</span></p>
+                     {/* USE VISUAL LABEL (Post-Shuffle) */}
+                     <p className="text-sm font-bold text-white">Alternativa <span className="text-emerald-400 text-lg ml-1">{visualCorrectAnswer}</span></p>
                  </div>
             </div>
 
@@ -169,7 +208,6 @@ const QuestionExplanationBlocks: React.FC<QuestionExplanationBlocksProps> = ({ q
                 <StyledBlock className="bg-sky-900/10 border-sky-500/20" gradient="bg-sky-500">
                     <SectionHeader icon={<BoltIcon />} title="Explicação Técnica" color="text-sky-400" />
                     
-                    {/* Eixo Dominante Badge if available from Tech text or Trapscan */}
                     {(trapscanData.itemLabel && trapscanData.itemLabel !== '—') && (
                          <div className="mb-3 inline-flex items-center gap-2 px-3 py-1 rounded bg-sky-950 border border-sky-800/50">
                             <RadarIcon className="w-3 h-3 text-sky-500" />
@@ -251,10 +289,20 @@ const QuestionExplanationBlocks: React.FC<QuestionExplanationBlocksProps> = ({ q
                     </div>
                     <div className="p-0">
                         {Object.entries(diagnosisMapParsed).map(([key, value]) => {
+                            // Only render rows that are not technical junk
+                            if (isTechnicalJunk(value)) return null;
+
                             // Normalize key
                             const optKey = key.trim().toUpperCase().charAt(0);
-                            const userKey = userAnswer ? userAnswer.trim().toUpperCase().charAt(0) : '';
-                            const isSelected = userKey === optKey;
+                            
+                            // Map to VISUAL Label (using orderedKeys if available)
+                            const visualKey = getVisualLabel(optKey);
+                            const visualUser = userAnswer ? getVisualLabel(userAnswer) : '';
+                            
+                            const isSelected = visualUser === visualKey;
+                            
+                            // Clean up "A=..." from value
+                            const cleanVal = String(value).replace(/^[A-E]\s*[:=]\s*/i, '');
                             
                             return (
                                 <div 
@@ -262,10 +310,10 @@ const QuestionExplanationBlocks: React.FC<QuestionExplanationBlocksProps> = ({ q
                                     className={`flex items-start gap-4 p-3 border-b border-rose-900/10 last:border-0 transition-colors ${isSelected ? "bg-rose-500/10" : "hover:bg-white/[0.02]"}`}
                                 >
                                     <div className={`w-6 h-6 rounded flex items-center justify-center text-xs font-black shrink-0 ${isSelected ? "bg-rose-500 text-white" : "bg-slate-800 text-slate-500"}`}>
-                                        {optKey}
+                                        {visualKey}
                                     </div>
                                     <div className={`flex-1 text-xs leading-relaxed ${isSelected ? "text-white font-bold" : "text-slate-400"}`}>
-                                        <SafeRender data={value} mode="plain" />
+                                        <SafeRender data={cleanVal} mode="plain" />
                                     </div>
                                 </div>
                             );

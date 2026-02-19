@@ -15,6 +15,7 @@ import { getText } from '../utils/i18nText';
 import { isStrictQuestion } from '../services/contentGate';
 import ConfirmationModal from './ConfirmationModal';
 import { useQuestionDispatch } from '../contexts/QuestionContext';
+import { sanitizeOptionText } from '../services/questionParser';
 
 interface QuestionRunnerProps {
     question: Question;
@@ -61,7 +62,7 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
     onNext, 
     isLast, 
     onClose, 
-    context,
+    context, 
     mode = 'SRS',
     allowGaps = false,
     onEdit,
@@ -94,18 +95,37 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
              return;
         }
         
-        // STRICT KEY FILTER: Only allow valid option keys (A-E)
-        // This prevents "correct: A" or metadata fields from appearing as buttons
+        // STRICT KEY FILTER: Only allow valid option keys (A-E) AND non-empty content
         const allowedKeys = ['A', 'B', 'C', 'D', 'E'];
         const validKeys = Object.keys(question.options)
-            .filter(k => allowedKeys.includes(k) && !!question.options[k]);
+            .filter(k => {
+                if (!allowedKeys.includes(k)) return false;
+                const val = question.options[k];
+                // Check if value exists and is not sanitized away
+                if (!val || !sanitizeOptionText(val)) return false;
+                return true;
+            });
         
         // Check if settings enabled
         if (settings.shuffleAlternatives && !question.isGapType) {
-            // Exceptions: Don't shuffle True/False or C/E types if explicit
-            // Or if strict 2 options that are C/E.
-            const isCebraspe = (question.options['C'] === 'Certo' && question.options['E'] === 'Errado');
-            if (isCebraspe) {
+            // DETECT JUDGMENT TYPE TO PREVENT SHUFFLE
+            const type = (question.questionType || '').toUpperCase();
+            const bank = (question.bank || '').toUpperCase();
+            const isJudgement = 
+                type.includes('C/E') || 
+                type.includes('CERTO') || 
+                type.includes('JULGAMENTO') || 
+                type.includes('V/F') ||
+                bank.includes('CESPE') || 
+                bank.includes('CEBRASPE');
+                
+            // Also check for explicit C/E keys presence
+            const hasExplicitCE = (question.options['C'] === 'Certo' && question.options['E'] === 'Errado');
+            const hasImplicitCE = validKeys.length === 2 && 
+                Object.values(question.options).some(v => (v as string)?.toUpperCase() === 'CERTO') &&
+                Object.values(question.options).some(v => (v as string)?.toUpperCase() === 'ERRADO');
+
+            if (isJudgement || hasExplicitCE || hasImplicitCE) {
                 // Keep explicit C/E order if those keys exist
                 setOrderedKeys(validKeys.sort()); 
             } else {
@@ -114,7 +134,7 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
         } else {
             setOrderedKeys(validKeys.sort()); // Default A-Z
         }
-    }, [question.id, settings.shuffleAlternatives, question.options, question.isGapType]);
+    }, [question.id, settings.shuffleAlternatives, question.options, question.isGapType, question.questionType, question.bank]);
 
     const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
 

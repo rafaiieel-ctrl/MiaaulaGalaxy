@@ -13,58 +13,74 @@ export interface ParsedQuestionContent {
 export function sanitizeOptionText(text: string | undefined): string {
     if (!text) return '';
     
-    let clean = text;
+    let clean = text.trim();
 
-    // Hardening: Remove explicit "Erradas=A:..." artifacts if they leaked into the option text
-    // This happens if the parser didn't split lines correctly previously
-    if (clean.includes('Erradas=') || clean.includes('Fechamento=')) {
-        return ''; // Mark as invalid/empty so it gets filtered out
+    // 1. Immediate rejection of known bad patterns (Metadata leaks that look like options)
+    const lower = clean.toLowerCase();
+    if (lower === 'correta' || lower === 'incorreta' || lower.startsWith('erradas=') || lower.startsWith('fechamento=')) {
+        return ''; // Mark as invalid/empty
     }
-    
-    // Regex to find Metadata patterns starting with P[0-7]= or specific keywords, 
-    // often preceded by a semicolon or whitespace, extending to the end of the string.
+
+    // 2. Remove trailing metadata tags
     const METADATA_LEAK_REGEX = /(?:^|[;\s]+)(?:P[0-7]\s*[=:]|GUIA_TRAPSCAN|TRAPSCAN_EXIGIDO|WRONG_DIAGNOSIS|Erradas=|Fechamento=)[\s\S]*$/i;
-    
     clean = clean.replace(METADATA_LEAK_REGEX, '');
     
-    // Remove potential trailing punctuation left behind
-    clean = clean.replace(/[;]+$/, '');
-    
-    return clean.trim();
+    return clean.replace(/[;]+$/, '').trim();
 }
 
 /**
  * Robust parser to extract options from raw text.
- * Rewritten to use Line-Based State Machine for strict boundary detection.
- * Prevents metadata (e.g., EXPLANATION_TECH) from being parsed as options.
+ * Uses strict state machine to prevent reading options from Explanation blocks.
  */
 export function parseQuestionText(rawText: string): ParsedQuestionContent {
     if (!rawText) return { stem: '', options: {} };
 
-    // Normalize newlines
     const lines = rawText.replace(/\r\n/g, '\n').split('\n');
     
     const stemLines: string[] = [];
     const options: { [key: string]: string } = {};
     let currentKey: string | null = null;
-    let stopParsing = false;
+    
+    // STATE MACHINE FLAGS
+    let isParsingOptions = false; // Starts false until we see Q_TEXT or implicit start
+    let hasHitMetadata = false;   // Permanently stops option parsing once true
 
     // Regex for "A) Text" or "A. Text" or "A: Text" ANCHORED to start of line
     const optionStartRegex = /^\s*([A-E])\s*[:\)\-\.]\s+(.*)/i;
     
-    // Regex to STOP parsing options if we hit metadata headers or known explanation blocks
+    // Regex for metadata headers that definitely end the options block
     const stopRegex = /^\s*(CORRECT|ANSWER|GABARITO|EXPLANATION|COMENTARIO|EXPLANATION_TECH|DISTRACTOR_PROFILE|WRONG_DIAGNOSIS|GUIA_TRAPSCAN|P[0-9]=|Erradas=|Fechamento=)/i;
 
+    // Detect if text starts with explicit Q_TEXT header or just starts
+    const hasExplicitHeader = /^\s*(Q_TEXT|QUESTION_TEXT|ENUNCIADO)/i.test(lines[0]);
+    if (!hasExplicitHeader) {
+        // If no header, assume we start in content mode (stem/options)
+        isParsingOptions = true; 
+    }
+
     for (const line of lines) {
-        // 1. Check for Stop Signals
-        if (stopRegex.test(line)) {
-            stopParsing = true;
-            break; 
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        // 1. Check for Stop Signals (Metadata)
+        if (stopRegex.test(trimmed)) {
+            hasHitMetadata = true;
+            isParsingOptions = false;
+            // Do not break, we might want to parse other things later, but options are closed.
+            continue; 
         }
         
-        if (stopParsing) break;
+        // 2. Check for explicit Q_TEXT start
+        if (/^\s*(Q_TEXT|QUESTION_TEXT|ENUNCIADO)[:=]/i.test(trimmed)) {
+            isParsingOptions = true;
+            stemLines.push(trimmed.replace(/^\s*(Q_TEXT|QUESTION_TEXT|ENUNCIADO)[:=]\s*/i, ''));
+            continue;
+        }
 
-        const match = line.match(optionStartRegex);
+        if (hasHitMetadata) continue; // Skip everything after metadata start
+
+        // 3. Option Detection
+        const match = trimmed.match(optionStartRegex);
         
         if (match) {
             // Found a new option start
@@ -72,89 +88,94 @@ export function parseQuestionText(rawText: string): ParsedQuestionContent {
             const content = match[2].trim();
             
             if (['A','B','C','D','E'].includes(key)) {
+                // Sanity check: If content is suspiciously short/meta-like, ignore
+                if (content.toLowerCase() === 'correta' || content.toLowerCase() === 'incorreta') {
+                    continue; 
+                }
+
                 currentKey = key;
                 options[key] = content;
+                isParsingOptions = true; // Implicitly we are in options now
                 continue;
             }
         }
 
-        if (currentKey) {
+        if (currentKey && isParsingOptions) {
             // Continuation of previous option
-            if (line.trim()) {
-                options[currentKey] += '\n' + line.trim();
-            }
-        } else {
-            // Still in Stem
-            stemLines.push(line);
+            options[currentKey] += '\n' + trimmed;
+        } else if (isParsingOptions) {
+            // Still in Stem (before first option)
+            stemLines.push(trimmed);
         }
     }
     
-    // Final Sanitize & Validate
+    // Final Sanitize
     const cleanedOptions: any = {};
-    let hasValidOptions = false;
-    
     Object.keys(options).forEach(k => {
-        const val = options[k];
-        // Hardening Check: Reject suspicious values
-        const lowerVal = val.toLowerCase();
-        if (lowerVal === 'correta' || lowerVal === 'incorreta' || lowerVal.includes('fechamento=') || lowerVal.includes('erradas=')) {
-            return; 
-        }
-        
-        const sanitized = sanitizeOptionText(val);
+        const sanitized = sanitizeOptionText(options[k]);
         if (sanitized) {
             cleanedOptions[k] = sanitized;
-            hasValidOptions = true;
         }
     });
-
-    if (!hasValidOptions) {
-        // Fallback: If strict parsing failed, return stem only (don't try loose regex which causes the bug)
-        return { stem: rawText, options: {} };
-    }
 
     return { stem: stemLines.join('\n').trim(), options: cleanedOptions };
 }
 
 /**
  * Ensures a Question object has its options parsed and valid.
- * Returns a NEW Question object with 'questionText' cleaned (stem only) 
- * and 'options' populated.
+ * Aggressively repairs corrupted options (like "A: correta").
  */
 export function ensureQuestionOptions(q: Question): Question {
-    // 1. Check existing options in object
-    let validOptions = false;
-    let cleanedExisting: any = {};
+    // 1. Check existing options for corruption
+    let isCorrupted = false;
     
     if (q.options) {
+        const values = Object.values(q.options);
+        // Check for specific corruption signatures
+        const hasBadValue = values.some(v => {
+            if (!v) return false;
+            const l = v.toLowerCase().trim();
+            return l === 'correta' || l === 'incorreta' || l.includes('erradas=') || l.includes('fechamento=');
+        });
+        
+        if (hasBadValue) {
+            isCorrupted = true;
+            console.warn(`[QuestionParser] Detected corrupted options in ${q.questionRef}. Triggering re-parse.`);
+        }
+    }
+
+    // 2. If valid and not corrupted, return sanitized version
+    if (!isCorrupted && q.options) {
+        let validCount = 0;
+        const cleaned: any = {};
         Object.keys(q.options).forEach(k => {
             // @ts-ignore
             const val = q.options[k];
-            if (val) {
-                // Hardening Check
-                const lowerVal = val.toLowerCase();
-                // Reject suspicious values
-                if (lowerVal === 'correta' || lowerVal === 'incorreta' || lowerVal.includes('fechamento=') || lowerVal.includes('erradas=')) {
-                    return;
-                }
-                cleanedExisting[k] = sanitizeOptionText(val);
-                validOptions = true;
+            const cleanVal = sanitizeOptionText(val);
+            if (cleanVal) {
+                cleaned[k] = cleanVal;
+                validCount++;
             }
         });
-    }
-    
-    if (validOptions) {
-        return { ...q, options: cleanedExisting };
+        
+        if (validCount >= 2) {
+             return { ...q, options: cleaned };
+        }
     }
 
-    // 2. Parse from text if object options are invalid/missing
-    const { stem, options } = parseQuestionText(q.questionText);
+    // 3. Re-parse from Raw Text (Fallback or Repair)
+    // Prefer rawImportBlock if available as it contains the full original context
+    const sourceText = q.rawImportBlock || q.questionText;
+    const { stem, options } = parseQuestionText(sourceText);
     
     if (Object.keys(options).length >= 2) {
         return {
             ...q,
-            questionText: stem, // Cleaned stem
-            options: { ...q.options, ...options } // Merged options
+            // Only update text if we parsed from questionText. 
+            // If from rawImportBlock, we might want to keep original questionText if it was fine? 
+            // Usually re-parsed stem is safer.
+            questionText: stem || q.questionText, 
+            options: { ...options } // Replace corrupted options
         };
     }
 

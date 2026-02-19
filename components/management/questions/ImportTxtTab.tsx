@@ -133,12 +133,14 @@ const ImportTxtTab: React.FC<ImportTxtTabProps> = ({ setActiveTab }) => {
                 } else if (currentSection === 'DIAGNOSIS') {
                     result.wrongDiagnosisMap[letter] = content;
                     lastKey = `DIAG_${letter}`;
-                } else {
-                    if (!content.startsWith('WD_') && !content.includes('|')) {
+                } else if (currentSection === 'OPTIONS') {
+                    // FIX: ONLY capture options if in OPTIONS section!
+                    if (!content.startsWith('WD_') && !content.includes('|') && content.toLowerCase() !== 'correta') {
                          result.options[letter] = content;
                          lastKey = `OPT_${letter}`;
                     }
                 }
+                // If section is METADATA, we ignore "A:" lines because they are likely inside an explanation
                 return;
             }
 
@@ -160,6 +162,9 @@ const ImportTxtTab: React.FC<ImportTxtTabProps> = ({ setActiveTab }) => {
                     
                     lastKey = normalizedKey;
                     if (normalizedKey === 'CORRECT' || normalizedKey === 'ANSWER') currentSection = 'METADATA';
+                    
+                    // Also switch to metadata if we hit Explanation headers
+                    if (normalizedKey.includes('EXPLANATION') || normalizedKey.includes('COMENTARIO')) currentSection = 'METADATA';
                 }
                 return;
             }
@@ -168,10 +173,12 @@ const ImportTxtTab: React.FC<ImportTxtTabProps> = ({ setActiveTab }) => {
             if (lastKey) {
                 if (lastKey === 'Q_TEXT') {
                     result.Q_TEXT = (result.Q_TEXT || '') + '\n' + trimmed;
-                } else if (lastKey.startsWith('OPT_')) {
+                } else if (lastKey.startsWith('OPT_') && currentSection === 'OPTIONS') {
                     const letter = lastKey.replace('OPT_', '');
                     if (result.options[letter]) result.options[letter] += '\n' + trimmed;
                 } else {
+                    // Only append metadata fields if not in options
+                    if (lastKey.startsWith('OPT_') && currentSection !== 'OPTIONS') return; 
                     result[lastKey] = (result[lastKey] || '') + '\n' + trimmed;
                 }
             }
