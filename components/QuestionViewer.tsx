@@ -21,7 +21,7 @@ interface QuestionViewerProps {
     highlightText?: string;
     
     evidence?: { stem: EvidenceItem[], options: Record<string, EvidenceItem[]> } | undefined;
-    orderedKeys?: string[]; // SHUFFLE: Array of keys in display order
+    orderedKeys?: string[]; // DEPRECATED: Ignored now to enforce stable order
 }
 
 const QuestionViewer: React.FC<QuestionViewerProps> = ({ 
@@ -136,6 +136,7 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
     };
 
     // Determine list of keys to render for Standard Mode
+    // STRICT ALPHABETICAL SORT - DISABLES SHUFFLE VISUALLY
     const keysToRender = useMemo(() => {
         const allowedKeys = ['A', 'B', 'C', 'D', 'E'];
         
@@ -145,17 +146,19 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                 if (!allowedKeys.includes(k)) return false;
                 const val = question.options[k];
                 if (!val || typeof val !== 'string' || val.trim() === '') return false;
-                if (val.trim().toLowerCase() === 'correta' || val.trim().toLowerCase() === 'incorreta') return false;
+                
+                // HARDENING: Filter bad option text patterns
+                const lower = val.trim().toLowerCase();
+                if (lower === 'correta' || lower === 'incorreta') return false;
+                if (lower.includes('fechamento=')) return false;
+                if (lower === '—') return false;
+
                 return true;
             });
 
-        if (orderedKeys && orderedKeys.length > 0) {
-            // Filter orderedKeys to ensure they are valid and present
-            return orderedKeys.filter(k => validAvailableKeys.includes(k));
-        }
-        
+        // Always return alphabetically sorted keys (A, B, C...) regardless of input order or shuffle prop
         return validAvailableKeys.sort();
-    }, [orderedKeys, question.options]);
+    }, [question.options]);
 
     return (
         <div className={`space-y-6 pb-10 ${className}`}>
@@ -311,7 +314,6 @@ const QuestionViewer: React.FC<QuestionViewerProps> = ({
                         question={question} 
                         userAnswer={selectedOption} 
                         showTitle={true}
-                        orderedKeys={orderedKeys} // Pass shuffle order for label mapping
                    />
                 </div>
             )}

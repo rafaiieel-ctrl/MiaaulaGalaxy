@@ -20,8 +20,8 @@ const defaultSettings: AppSettings = {
   quickAccessTools: ['flashcards', 'trail', 'porrada', 'literalness', 'alarms'],
   readerMode: 'compact', 
   
-  // NEW SETTING DEFAULT
-  shuffleAlternatives: true,
+  // HOTFIX: Disable shuffle by default for stability
+  shuffleAlternatives: false,
 
   trapscan: {
       enabled: true,
@@ -193,8 +193,8 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
               const merged = { ...prev, ...data };
               if (!merged.readerMode) merged.readerMode = 'compact';
               
-              // Ensure shuffle default if missing
-              if (merged.shuffleAlternatives === undefined) merged.shuffleAlternatives = true;
+              // Ensure shuffle is false for hotfix
+              merged.shuffleAlternatives = false;
 
               if (!merged.srsV2) {
                   merged.srsV2 = defaultSettings.srsV2;

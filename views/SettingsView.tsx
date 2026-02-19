@@ -127,9 +127,12 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onOpenQrModal, onOpenSyncMo
     updateSettings({ enableBlackHoleEffect: e.target.checked });
   };
   
+  // HOTFIX: Shuffle is forcibly disabled in UI to prevent usage
+  /*
   const handleShuffleToggle = (e: React.ChangeEvent<HTMLInputElement>) => {
     updateSettings({ shuffleAlternatives: e.target.checked });
   };
+  */
 
   const handleDownloadBackup = async () => {
       setIsExporting(true);
@@ -278,6 +281,8 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onOpenQrModal, onOpenSyncMo
             </label>
          </div>
          
+         {/* SHUFFLE DISABLED GLOBALLY - HIDDEN FROM UI */}
+         {/*
          <div className="p-4 flex items-center justify-between bg-transparent dark:bg-bunker-900 border-b border-bunker-100 dark:border-bunker-800">
             <div className="flex items-center gap-4">
                 <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-indigo-50 dark:bg-indigo-900/20 text-indigo-500"><PuzzlePieceIcon className="w-5 h-5" /></div>
@@ -291,6 +296,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onOpenQrModal, onOpenSyncMo
               <div className="w-11 h-6 bg-bunker-200 dark:bg-bunker-700 rounded-full peer peer-checked:bg-emerald-500 after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-full"></div>
             </label>
          </div>
+         */}
 
          <div className="p-4 flex items-center justify-between bg-transparent dark:bg-bunker-900 border-b border-bunker-100 dark:border-bunker-800">
             <div className="flex items-center gap-4">

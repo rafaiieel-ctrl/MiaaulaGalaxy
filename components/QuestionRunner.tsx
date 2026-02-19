@@ -45,16 +45,6 @@ const MediaBlock: React.FC<{ image?: string, audio?: string }> = ({ image, audio
     );
 };
 
-// Fisher-Yates Shuffle
-function shuffleArray<T>(array: T[]): T[] {
-    const arr = [...array];
-    for (let i = arr.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
-}
-
 const QuestionRunner: React.FC<QuestionRunnerProps> = ({ 
     question, 
     sessionConfig, 
@@ -74,76 +64,47 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
     const startTimeRef = useRef<number>(Date.now());
 
     const isInvalidContent = !allowGaps && !isStrictQuestion(question);
-    
-    // Shuffle Logic State
-    const [orderedKeys, setOrderedKeys] = useState<string[]>([]);
+
+    // --- HARDENING: Validate Option Count (Hotfix) ---
+    // If standard multiple choice question (not C/E) has < 2 valid options, skip it.
+    const isValidForRender = useMemo(() => {
+        if (allowGaps || !question.options) return true;
+        
+        // Check for C/E types first
+        const type = (question.questionType || '').toUpperCase();
+        const isJudgment = type.includes('C/E') || type.includes('CERTO') || type.includes('JULGAMENTO');
+        if (isJudgment) return true; // C/E logic handles itself
+
+        // Standard logic: Check count of non-empty, non-garbage options
+        const validCount = Object.values(question.options).filter(v => {
+            if (!v || !sanitizeOptionText(v as string)) return false;
+            return true;
+        }).length;
+
+        return validCount >= 2;
+    }, [question, allowGaps]);
 
     useEffect(() => {
-        if (isInvalidContent) {
-            console.warn("[QuestionRunner] Conteúdo inválido detectado. Pulando...", question.id);
+        if (isInvalidContent || !isValidForRender) {
+            console.warn(`[QuestionRunner] Conteúdo inválido/incompleto detectado (${question.id}). Pulando...`);
             if (onNext) {
                 const t = setTimeout(onNext, 100);
                 return () => clearTimeout(t);
             }
         }
-    }, [question.id, isInvalidContent, onNext]);
+    }, [question.id, isInvalidContent, isValidForRender, onNext]);
     
-    // --- SHUFFLE LOGIC ---
-    useEffect(() => {
-        if (!question.options) {
-             setOrderedKeys([]);
-             return;
-        }
-        
-        // STRICT KEY FILTER: Only allow valid option keys (A-E) AND non-empty content
-        const allowedKeys = ['A', 'B', 'C', 'D', 'E'];
-        const validKeys = Object.keys(question.options)
-            .filter(k => {
-                if (!allowedKeys.includes(k)) return false;
-                const val = question.options[k];
-                // Check if value exists and is not sanitized away
-                if (!val || !sanitizeOptionText(val)) return false;
-                return true;
-            });
-        
-        // Check if settings enabled
-        if (settings.shuffleAlternatives && !question.isGapType) {
-            // DETECT JUDGMENT TYPE TO PREVENT SHUFFLE
-            const type = (question.questionType || '').toUpperCase();
-            const bank = (question.bank || '').toUpperCase();
-            const isJudgement = 
-                type.includes('C/E') || 
-                type.includes('CERTO') || 
-                type.includes('JULGAMENTO') || 
-                type.includes('V/F') ||
-                bank.includes('CESPE') || 
-                bank.includes('CEBRASPE');
-                
-            // Also check for explicit C/E keys presence
-            const hasExplicitCE = (question.options['C'] === 'Certo' && question.options['E'] === 'Errado');
-            const hasImplicitCE = validKeys.length === 2 && 
-                Object.values(question.options).some(v => (v as string)?.toUpperCase() === 'CERTO') &&
-                Object.values(question.options).some(v => (v as string)?.toUpperCase() === 'ERRADO');
-
-            if (isJudgement || hasExplicitCE || hasImplicitCE) {
-                // Keep explicit C/E order if those keys exist
-                setOrderedKeys(validKeys.sort()); 
-            } else {
-                setOrderedKeys(shuffleArray(validKeys));
-            }
-        } else {
-            setOrderedKeys(validKeys.sort()); // Default A-Z
-        }
-    }, [question.id, settings.shuffleAlternatives, question.options, question.isGapType, question.questionType, question.bank]);
+    // --- SHUFFLE LOGIC REMOVED (Revert) ---
+    // OrderedKeys remains undefined/empty, relying on Viewer default sort (A-E)
 
     const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
 
-    if (isInvalidContent) {
+    if (isInvalidContent || !isValidForRender) {
         return (
             <div className="flex flex-col items-center justify-center h-full p-10 text-center space-y-4">
                 <ExclamationTriangleIcon className="w-12 h-12 text-amber-500 opacity-50" />
                 <h3 className="text-xl font-bold text-white">Conteúdo Incompatível</h3>
-                <p className="text-slate-400 text-sm">Este item parece ser uma lacuna em modo questão. Pulando...</p>
+                <p className="text-slate-400 text-sm">Esta questão parece estar incompleta ou corrompida. Pulando...</p>
                 <button onClick={onNext} className="bg-white/10 px-6 py-2 rounded-lg text-sm font-bold uppercase hover:bg-white/20">
                     Forçar Pulo
                 </button>
@@ -210,19 +171,16 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
 
     const handleRating = (rating: 'again' | 'hard' | 'good' | 'easy') => {
         const timeTaken = (Date.now() - startTimeRef.current) / 1000;
-        // @ts-ignore - Dynamic addition
-        const enhancedTrapscanData = { ...trapscanData, orderKeys: orderedKeys };
-        
-        onResult(rating, timeTaken, enhancedTrapscanData);
+        // No orderKeys passed (shuffle disabled)
+        onResult(rating, timeTaken, trapscanData);
         if (onNext) onNext();
     };
     
     const handleSimpleNext = () => {
         const isCorrect = selectedOption === question.correctAnswer;
         const timeTaken = (Date.now() - startTimeRef.current) / 1000;
-        // @ts-ignore
-        const enhancedTrapscanData = { ...trapscanData, orderKeys: orderedKeys };
-        onResult(isCorrect ? 'good' : 'again', timeTaken, enhancedTrapscanData);
+        // No orderKeys passed (shuffle disabled)
+        onResult(isCorrect ? 'good' : 'again', timeTaken, trapscanData);
         if (onNext) onNext();
     };
 
@@ -311,7 +269,8 @@ const QuestionRunner: React.FC<QuestionRunnerProps> = ({
                           eliminatedOptions={eliminatedOptions}
                           onEliminate={handleEliminate}
                           highlightText={highlightAnchor ? getText(question.anchorText) : undefined}
-                          orderedKeys={orderedKeys.length > 0 ? orderedKeys : undefined} // Pass shuffled order
+                          // Remove orderedKeys to enforce stable alphabetical rendering
+                          orderedKeys={undefined}
                       />
                   </ReadingContainer>
             </div>
