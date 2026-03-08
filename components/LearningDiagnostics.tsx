@@ -12,7 +12,7 @@ interface Props {
 const LearningDiagnostics: React.FC<Props> = ({ questions, settings }) => {
     const insights = useMemo(() => {
         // Lógica de análise real aqui (simplificada para o exemplo)
-        const allAttempts = questions.flatMap(q => q.attemptHistory);
+        const allAttempts = questions.flatMap(q => q.attemptHistory || []);
         if (allAttempts.length < 30) return null;
         return []; // Retornaria insights se houvesse dados suficientes
     }, [questions]);
