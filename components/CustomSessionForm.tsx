@@ -78,7 +78,7 @@ const CustomSessionForm: React.FC<CustomSessionFormProps> = ({ dueQuestions, onS
 
     dueQuestions.forEach(q => {
       // Skip if frozen (double check, although dueQuestions should be pre-filtered now)
-      if (settings.subjectConfigs && settings.subjectConfigs[q.subject]?.isFrozen) return;
+      if (settings.subjectConfigs && q.subject && settings.subjectConfigs[q.subject]?.isFrozen) return;
 
       if (q.subject) subjects.add(q.subject);
       if (q.topic) topics.add(q.topic);
@@ -114,12 +114,12 @@ const CustomSessionForm: React.FC<CustomSessionFormProps> = ({ dueQuestions, onS
 
     return dueQuestions.filter(q => {
       // Frozen check
-      if (settings.subjectConfigs && settings.subjectConfigs[q.subject]?.isFrozen) return false;
+      if (settings.subjectConfigs && q.subject && settings.subjectConfigs[q.subject]?.isFrozen) return false;
 
       const subjectMatch = filters.subjects.size === 0 || filters.subjects.has(q.subject);
       const topicMatch = filters.topics.size === 0 || filters.topics.has(q.topic);
-      const bankMatch = filters.banks.size === 0 || filters.banks.has(q.bank);
-      const positionMatch = filters.positions.size === 0 || filters.positions.has(q.position);
+      const bankMatch = filters.banks.size === 0 || filters.banks.has(q.bank || '');
+      const positionMatch = filters.positions.size === 0 || filters.positions.has(q.position || '');
       const typeMatch = filters.types.size === 0 || filters.types.has(q.questionType || 'Não Definido');
       const areaMatch = filters.areas.size === 0 || filters.areas.has(q.area || '');
       
@@ -131,7 +131,7 @@ const CustomSessionForm: React.FC<CustomSessionFormProps> = ({ dueQuestions, onS
       });
       
       let priority: PriorityLevel = 'medium';
-      if (settings.subjectConfigs && settings.subjectConfigs[q.subject]) {
+      if (settings.subjectConfigs && q.subject && settings.subjectConfigs[q.subject]) {
           priority = settings.subjectConfigs[q.subject].priority;
       }
       const priorityMatch = filters.priorities.size === 0 || filters.priorities.has(priority);

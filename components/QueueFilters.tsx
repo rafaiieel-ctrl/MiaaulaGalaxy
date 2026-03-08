@@ -56,15 +56,15 @@ const QueueFilters: React.FC<QueueFiltersProps> = ({ allItems, onFilterChange })
 
     allItems.forEach(item => {
       // Handle Discipline (Flashcard) vs Subject (Question)
-      if ('subject' in item) subjects.add(item.subject);
-      else if ('discipline' in item) subjects.add(item.discipline);
+      if ('subject' in item && item.subject) subjects.add(item.subject);
+      else if ('discipline' in item && (item as Flashcard).discipline) subjects.add((item as Flashcard).discipline);
       
       if (item.topic) topics.add(item.topic);
       
       if ('questionType' in item && item.questionType) types.add(item.questionType);
       if ('bank' in item && item.bank) banks.add(item.bank);
-      if ('position' in item && (item as Question).position) positions.add((item as Question).position);
-      if ('area' in item && (item as Question).area) areas.add((item as Question).area);
+      if ('position' in item && (item as Question).position) positions.add((item as Question).position || '');
+      if ('area' in item && (item as Question).area) areas.add((item as Question).area || '');
       if ('tags' in item && Array.isArray(item.tags)) {
         item.tags.forEach(tag => tags.add(tag));
       }

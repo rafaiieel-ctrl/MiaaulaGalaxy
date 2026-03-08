@@ -53,13 +53,13 @@ const MasteryBadge: React.FC<MasteryBadgeProps> = ({
   }[size];
   
   // Note: 'animate-pulse' is a simple opacity pulse. For a border color pulse, a custom animation would be needed in index.html.
-  const statusClasses = {
+  const statusClasses = (statusFlag && {
     review: 'ring-2 ring-offset-1 ring-offset-bunker-50 dark:ring-offset-bunker-950 ring-violet-500 animate-pulse',
     new: 'ring-2 ring-offset-1 ring-offset-bunker-50 dark:ring-offset-bunker-950 ring-sky-400',
     learning: 'ring-2 ring-offset-1 ring-offset-bunker-50 dark:ring-offset-bunker-950 ring-amber-400',
     stable: '',
     unknown: '',
-  }[statusFlag || ''] || '';
+  }[statusFlag]) || '';
 
   const tooltipText = `Domínio: ${level}${effectiveScore !== undefined && effectiveScore !== null ? ` — ${Math.round(effectiveScore)}%` : ''}`;
 

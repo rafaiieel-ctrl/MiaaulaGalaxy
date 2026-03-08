@@ -56,17 +56,17 @@ const AuditView: React.FC = () => {
             </div>
             
             <Section title="1) Tabela R & D (Retrievability & Domain)" status={checks.rdCheck}>
-                <Table headers={['id', 'Δt(dias)', 'S', 'R', 'D']} data={results.rd.map(r => [r.id, r.dt.toFixed(2), r.S, r.R.toFixed(4), r.D.toFixed(2)])} />
+                <Table headers={['id', 'Δt(dias)', 'S', 'R', 'D']} data={results.rd.map((r: any) => [r.id, r.dt.toFixed(2), r.S, r.R.toFixed(4), r.D.toFixed(2)])} />
             </Section>
 
             <Section title="2) Fila - Modo Spaced" status={checks.spacedQueueCheck}>
                 <p className="text-xs">Validação: Ordem esperada `Q4, Q1, Q2, Q3, Q5`.</p>
-                <Table headers={['Ordem', 'id', 'R_now', 'Priority']} data={results.spacedQueue.map((r,i) => [i+1, r.id, r.R_now.toFixed(4), r.priority.toFixed(4)])} />
+                <Table headers={['Ordem', 'id', 'R_now', 'Priority']} data={results.spacedQueue.map((r: any, i: number) => [i+1, r.id, r.R_now.toFixed(4), r.priority.toFixed(4)])} />
             </Section>
 
             <Section title="3) Fila - Modo Prova" status={checks.examQueueCheck}>
                  <p className="text-xs">Validação: Ordem esperada `Q3, Q4, Q2, Q1, Q5`.</p>
-                 <Table headers={['Ordem', 'id', 'R_proj', 'Priority_exam']} data={results.examQueue.map((r, i) => [i + 1, r.id, r.R_proj.toFixed(4), r.priority.toFixed(4)])} />
+                 <Table headers={['Ordem', 'id', 'R_proj', 'Priority_exam']} data={results.examQueue.map((r: any, i: number) => [i + 1, r.id, r.R_proj.toFixed(4), r.priority.toFixed(4)])} />
             </Section>
 
             <Section title="4) Atualização de S (Estabilidade)" status={checks.sUpdateCheck}>
@@ -79,7 +79,7 @@ const AuditView: React.FC = () => {
             </Section>
 
             <Section title="5) SOP/Tempo & SOP-Guard" status={checks.sopCheck && checks.sopGuardCheck}>
-                <Table headers={['Tempo', 'Classificação']} data={results.sop.map(s => [s.time + 's', s.classification])} />
+                <Table headers={['Tempo', 'Classificação']} data={results.sop.map((s: any) => [s.time + 's', s.classification])} />
                 <p className="text-xs mt-2">Validação Classificação: RUSH, SOP_OK, OVER (OK)</p>
                 <p className="text-xs mt-2">SOP-Guard ativo para tipos (02, 03, 04, 07, 15): {results.sopGuardActive ? 'Sim (OK)' : 'Não (FALHA)'}</p>
             </Section>
@@ -87,7 +87,7 @@ const AuditView: React.FC = () => {
             <Section title="6) Micro-spacing (Exam Mode)" status={checks.microSpacingCheck}>
                 <p>Ao errar questão fraca (S {'<'} 10) às 12:00, a sequência de próximas revisões agendadas seria:</p>
                 <ul className="list-disc list-inside font-mono text-xs">
-                    {results.microSpacing.map((ts, i) => <li key={i}>Falha {i+1} &rarr; {ts}</li>)}
+                    {results.microSpacing.map((ts: number, i: number) => <li key={i}>Falha {i+1} &rarr; {ts}</li>)}
                 </ul>
                 <p className="text-xs mt-2">Validação: Checa se a lógica de agendamento nos próximos slots de `microSpacedHours` está correta.</p>
             </Section>

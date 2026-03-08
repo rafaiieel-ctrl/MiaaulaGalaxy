@@ -19,7 +19,7 @@ const ErrorDiagnosticsReport: React.FC<ErrorDiagnosticsReportProps> = ({ questio
                         <div className="flex justify-between">
                             <span className="font-bold text-xs">{q.questionRef}</span>
                             {/* Wrapper div for title instead of on span wrapping component */}
-                            {q.timeSec < 10 && (
+                            {q.timeSec !== undefined && q.timeSec < 10 && (
                                 <div title="Rápida demais (Impulsivo)" className="inline-block">
                                     <BoltIcon className="w-3 h-3 animate-pulse text-amber-500" />
                                 </div>

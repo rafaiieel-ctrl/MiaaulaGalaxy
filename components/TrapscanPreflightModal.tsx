@@ -40,6 +40,7 @@ const TrapscanPreflightModal: React.FC<TrapscanPreflightModalProps> = ({ isOpen,
         if (saveAsDefault) {
             updateSettings({
                 trapscan: {
+                    enabled: settings.trapscan?.enabled ?? true,
                     ...settings.trapscan,
                     assistMode,
                     defaultMode: mode,

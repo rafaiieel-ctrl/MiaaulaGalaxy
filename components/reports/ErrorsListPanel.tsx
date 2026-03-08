@@ -27,7 +27,7 @@ const ErrorsListPanel: React.FC<ErrorsListPanelProps> = ({ allQuestions, filters
                         <span className="font-bold text-xs mr-2">{item.questionRef}</span>
                         <span className="text-sm text-slate-600 dark:text-slate-400">{item.questionText}</span>
                     </div>
-                    {item.timeSec < 10 && (
+                    {item.timeSec !== undefined && item.timeSec < 10 && (
                         <div title="Rápida demais" className="shrink-0 ml-2">
                             <BoltIcon className="w-3 h-3 text-amber-500" />
                         </div>
