@@ -52,7 +52,7 @@ const FlashcardStudySessionModal: React.FC<FlashcardStudySessionModalProps> = ({
     const handleFinish = useCallback(() => {
         // Commit batch to Context
         if (sessionUpdates.length > 0) {
-            updateBatchFlashcards(sessionUpdates.map(fc => ({ id: fc.id, ...fc })));
+            updateBatchFlashcards(sessionUpdates.map(fc => ({ ...fc })));
         }
         
         // Signal Parent

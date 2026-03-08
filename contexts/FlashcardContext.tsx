@@ -38,7 +38,7 @@ const hydrateFlashcard = (fc: any, index: number): Flashcard | null => {
         backAudio: fc.backAudio,
         type: ['basic', 'cloze', 'imageOcclusion'].includes(fc.type) ? fc.type : 'basic',
         tags: Array.isArray(fc.tags) ? fc.tags : [],
-        stability: Number(fc.stability) || undefined,
+        stability: Number(fc.stability) || 0,
         lastReviewedAt: fc.lastReviewedAt,
         nextReviewDate: fc.nextReviewDate || today,
         masteryScore: Number(fc.masteryScore) || 0,

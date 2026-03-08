@@ -41,7 +41,7 @@ const ImportLiteralness: React.FC<ImportLiteralnessProps> = ({ type = 'LAW_DRY',
             const result = parseLitRefText(text, settings, batchId);
             setDiagnosis(result);
             setIsProcessing(false);
-        }, 100); // Async simulation for UI response
+        }, 100); 
     };
 
     const handleImport = async (mode: 'OVERWRITE' | 'MERGE' | 'SKIP') => {
@@ -55,26 +55,15 @@ const ImportLiteralness: React.FC<ImportLiteralnessProps> = ({ type = 'LAW_DRY',
                 flashcards: diagnosis.parsedData.flashcards
             };
 
-            // Process based on mode (Logic delegated to Repository to keep UI clean)
-            // Note: Repository handles "Overwrite" by replacing children. 
-            // "Skip" logic is: filter out existing cards from batch before saving.
-            
-            if (mode === 'SKIP') {
-                const existingIds = new Set(allCards.map(c => c.id));
-                batch.cards = batch.cards.filter(c => !existingIds.has(c.id));
-                // We also filter children to only include those for new cards
-                // (Assuming Skip means "Don't touch existing articles at all")
-                const newCardIds = new Set(batch.cards.map(c => c.id));
-                batch.questions = batch.questions.filter(q => newCardIds.has(srs.canonicalizeLitRef(q.lawRef)));
-                batch.flashcards = batch.flashcards.filter(f => newCardIds.has(srs.resolveLitRef(f)));
-            }
-
             // Use Repository Service for Robust Save (Transactional-ish)
             await nucleusRepo.saveImportBatch(batch);
             
-            // Refresh Contexts (The providers effectively reload from DB or we push directly)
-            // For now, we push to dispatchers to update UI state immediately
-            addBatchCards(batch.cards);
+            // Refresh Contexts (Sync state)
+            // Note: addBatchCards now accepts gaps properly if we passed them, 
+            // but repository already handled storage. We just need to update state.
+            // The parsedData.gaps is available here.
+            
+            addBatchCards(batch.cards, [], [], diagnosis.parsedData.gaps); // Persist gaps to Context
             addBatchQuestions(batch.questions, mode === 'OVERWRITE' ? 'OVERWRITE' : 'MERGE'); 
             addBatchFlashcards(batch.flashcards);
 
@@ -136,7 +125,6 @@ const ImportLiteralness: React.FC<ImportLiteralnessProps> = ({ type = 'LAW_DRY',
                             placeholder="Cole aqui seu conteúdo (LIT_REF: ...)"
                             spellCheck={false}
                         />
-                        {/* Line Numbers Overlay could go here if needed */}
                     </div>
                     <div className="flex justify-between items-center shrink-0">
                          <button onClick={() => setText('')} className="text-slate-500 hover:text-rose-500 p-2"><TrashIcon className="w-5 h-5"/></button>

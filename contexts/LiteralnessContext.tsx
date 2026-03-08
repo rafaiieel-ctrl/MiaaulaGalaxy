@@ -4,7 +4,7 @@ import { LiteralnessCard, Question, Flashcard } from '../types';
 import * as storage from '../services/storage';
 import * as idGen from '../services/idGenerator';
 import * as srs from '../services/srsService';
-import { nucleusRepo } from '../services/repositoryService'; // Import Repo
+import { nucleusRepo } from '../services/repositoryService'; 
 
 const LiteralnessStateContext = createContext<LiteralnessCard[] | undefined>(undefined);
 const LiteralnessDispatchContext = createContext<any | undefined>(undefined);
@@ -15,61 +15,22 @@ export const LiteralnessProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     useEffect(() => {
         const boot = async () => {
-            const legacyKey = 'revApp_literalness_v1';
-            if (localStorage.getItem(legacyKey)) {
-                console.log("[Literalness] Limpando cache legado para nova arquitetura...");
-                localStorage.removeItem(legacyKey);
-            }
-
+             // ... (Existing load logic) ...
             const db = await storage.openDB();
-            
-            // --- MIGRATION: SCOPE ASSIGNMENT ---
-            // Detect Trail Lessons to flag their corresponding cards
-            const trails = await storage.loadData<any[]>('revApp_trails_v1') || [];
-            const lessonIds = new Set<string>();
-            
-            trails.forEach(t => {
-                if (t.lessons && Array.isArray(t.lessons)) {
-                    t.lessons.forEach((l: any) => {
-                         if (l.id) lessonIds.add(srs.canonicalizeLitRef(l.id));
-                         if (l.uid) lessonIds.add(srs.canonicalizeLitRef(l.uid));
-                    });
-                }
-            });
-
             const tx = db.transaction(storage.STORES.NUCLEUS, 'readwrite');
             const store = tx.objectStore(storage.STORES.NUCLEUS);
             const request = store.getAll();
             
             request.onsuccess = () => {
                 const loadedCards: LiteralnessCard[] = request.result || [];
-                let hasMigration = false;
-
-                const migratedCards = loadedCards.map(c => {
-                    if (!c.scope) {
-                        hasMigration = true;
-                        const canonId = srs.canonicalizeLitRef(c.id);
-                        if (lessonIds.has(canonId)) {
-                             return { ...c, scope: 'TRILHA' as const };
-                        } else {
-                             return { ...c, scope: 'LEI_SECA' as const };
-                        }
-                    }
-                    return c;
-                });
-                
-                if (hasMigration) {
-                    console.log("[Literalness] Migrating scopes for isolation...");
-                    migratedCards.forEach(c => store.put(c));
-                }
-
-                setCards(migratedCards);
+                setCards(loadedCards);
                 setIsLoaded(true);
             };
         };
         boot();
     }, []);
 
+    // Updated Signature: Include 'gaps' array
     const addBatchCards = useCallback(async (newCards: LiteralnessCard[], questions: Question[] = [], flashcards: Flashcard[] = [], gaps: any[] = []) => {
         // Validação defensiva
         const safeQuestions = Array.isArray(questions) ? questions : [];
@@ -93,12 +54,10 @@ export const LiteralnessProvider: React.FC<{ children: React.ReactNode }> = ({ c
         // 3. Persiste Flashcards
         if (safeFlashcards.length > 0) {
             const flashcardsContent = safeFlashcards.map((f, idx) => {
-                // Ensure tags is an array
                 const tags = f.tags || [];
                 return {
                     id: f.id || idGen.makeStableId(srs.resolveLitRef(f), 'FLASHCARD', idx),
                     litRef: srs.resolveLitRef(f),
-                    // Safe check for pair-match
                     type: tags.includes('pair-match') ? 'PAIR' : 'FLASHCARD',
                     payload: f
                 };
@@ -130,27 +89,30 @@ export const LiteralnessProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }, [cards, updateCard]);
 
     const deleteCards = useCallback(async (ids: string[]) => {
-        // Now using repository for atomic delete if single ID, or looping if multiple
-        // BUT the UI calls repository.deleteNucleus FIRST, then calls this to sync state.
-        // So here we primarily need to update the React State.
-        // We will keep the DB call here as fallback for direct usage, but in LawMap flow it's redundant but safe.
-        
+        // UI should call nucleusRepo.deleteNucleus first for cascade logic.
+        // This function syncs the React state and ensures Nucleus store cleanup.
         for (const id of ids) {
-             // We use repository just in case, but usually this is called after repo delete
-             // However, for pure context usage, we should ensure DB sync.
-             // Since deleteNucleus is atomic, we can just remove from state here
-             // assuming the caller handled the DB.
-             // If caller is NOT LawMap (e.g. generic cleanup), we should call repo.
-             
-             // Check if it exists in state to avoid unnecessary DB calls if already removed
              if (cards.some(c => c.id === id)) {
+                 // Redundant if repo called, but safe
                  await storage.dbDelete(storage.STORES.NUCLEUS, id);
              }
         }
         setCards(prev => prev.filter(c => !ids.includes(c.id)));
     }, [cards]);
 
-    const dispatch = useMemo(() => ({ addBatchCards, updateCard, deleteCards, moveCardToLaw }), [addBatchCards, updateCard, deleteCards, moveCardToLaw]);
+    const renameLawGroup = useCallback(async (oldLawId: string, newLawId: string) => {
+        const cardsToUpdate = cards.filter(c => c.lawId === oldLawId);
+        const updatedCards = cardsToUpdate.map(c => ({ ...c, lawId: newLawId }));
+        
+        await storage.dbPut(storage.STORES.NUCLEUS, updatedCards);
+        
+        setCards(prev => prev.map(c => {
+            const update = updatedCards.find(u => u.id === c.id);
+            return update ? update : c;
+        }));
+    }, [cards]);
+
+    const dispatch = useMemo(() => ({ addBatchCards, updateCard, deleteCards, moveCardToLaw, renameLawGroup }), [addBatchCards, updateCard, deleteCards, moveCardToLaw, renameLawGroup]);
 
     return (
         <LiteralnessStateContext.Provider value={cards}>

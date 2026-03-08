@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { LiteralnessCard, Question, Flashcard } from '../../types';
+import { LiteralnessCard } from '../../types';
 import { XMarkIcon, TrashIcon, ExclamationTriangleIcon } from '../icons';
 import * as srs from '../../services/srsService';
 import { useQuestionState } from '../../contexts/QuestionContext';
@@ -21,7 +21,7 @@ const DeleteArticleModal: React.FC<DeleteArticleModalProps> = ({ isOpen, onClose
     const allFlashcards = useFlashcardState();
     const { settings } = useSettings();
 
-    // Calculate Impact stats
+    // Calculate Impact stats using SRS Service to check linked items
     const stats = useMemo(() => {
         if (!isOpen) return { questions: 0, gaps: 0, flashcards: 0, pairs: 0, progress: 0 };
         const smartStats = srs.getLitRefSmartStatus(card.id, allQuestions, allFlashcards, settings);

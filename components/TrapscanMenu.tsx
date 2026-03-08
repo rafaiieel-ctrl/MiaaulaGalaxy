@@ -13,7 +13,7 @@ interface TrapscanMenuProps {
 
 const TrapscanMenu: React.FC<TrapscanMenuProps> = ({ isOpen, onClose, anchorRect }) => {
     const { settings, updateSettings } = useSettings();
-    const config = settings.trapscan || { enabled: true, assistMode: true, defaultMode: 'TREINO', lockLevel: 'SOFT' };
+    const config = settings.trapscan || { enabled: true, assistMode: false, defaultMode: 'TREINO', lockLevel: 'SOFT' };
     const [localAssist, setLocalAssist] = useState(config.assistMode);
 
     // Sync local state when settings change or menu opens
@@ -111,32 +111,6 @@ const TrapscanMenu: React.FC<TrapscanMenuProps> = ({ isOpen, onClose, anchorRect
                         </button>
                     </div>
                 </div>
-
-                {/* Lock Level (Only if Treino) */}
-                {config.defaultMode === 'TREINO' && (
-                    <div className={`space-y-2 transition-opacity ${!localAssist ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
-                        <p className="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em]">Nível de Bloqueio</p>
-                        <div className="flex gap-2">
-                             <button 
-                                onClick={() => handleSetLockLevel('SOFT')}
-                                className={`flex-1 p-2 rounded-lg border text-left transition-all ${config.lockLevel === 'SOFT' ? 'bg-sky-500/10 border-sky-500 text-sky-400' : 'bg-white/5 border-white/5 text-slate-500 hover:bg-white/10'}`}
-                             >
-                                 <span className="block text-[10px] font-black uppercase mb-0.5">Soft Lock</span>
-                                 <span className="text-[9px] opacity-70 leading-tight">Libera após P1+P2</span>
-                             </button>
-                             <button 
-                                onClick={() => handleSetLockLevel('HARD')}
-                                className={`flex-1 p-2 rounded-lg border text-left transition-all ${config.lockLevel === 'HARD' ? 'bg-rose-500/10 border-rose-500 text-rose-400' : 'bg-white/5 border-white/5 text-slate-500 hover:bg-white/10'}`}
-                             >
-                                 <div className="flex items-center gap-1 mb-0.5">
-                                     <LockClosedIcon className="w-3 h-3" />
-                                     <span className="block text-[10px] font-black uppercase">Hard Lock</span>
-                                 </div>
-                                 <span className="text-[9px] opacity-70 leading-tight">Libera após P4</span>
-                             </button>
-                        </div>
-                    </div>
-                )}
             </div>
         </>
     );

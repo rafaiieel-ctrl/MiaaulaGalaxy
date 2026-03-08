@@ -113,7 +113,7 @@ const LiteralnessView: React.FC<{ type?: LawContentType; activeStudyRef?: StudyR
                     pairCount={pairCards.length}
                     onRoundFinished={(result, updatedItems) => {
                         if (updatedItems.length > 0) {
-                            updateBatchFlashcards(updatedItems.map(f => ({ id: f.id, ...f })));
+                            updateBatchFlashcards(updatedItems.map(f => ({ ...f })));
                         }
                         logDailyActivity('PLAY_PAIR_MATCH');
                     }}
